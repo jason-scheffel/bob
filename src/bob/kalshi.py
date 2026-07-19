@@ -1,17 +1,37 @@
 # SPDX-FileCopyrightText: 2026 Jason Scheffel <contact@jasonscheffel.com>
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-from collections.abc import Iterable, Iterator, Mapping
+import time
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
 BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 SERIES_TICKER = "KXBTC"
 PAGE_LIMIT = 1000
+_ET = ZoneInfo("America/New_York")
+_MONTH_ABBR = (
+    "JAN",
+    "FEB",
+    "MAR",
+    "APR",
+    "MAY",
+    "JUN",
+    "JUL",
+    "AUG",
+    "SEP",
+    "OCT",
+    "NOV",
+    "DEC",
+)
+_MAX_429_ATTEMPTS = 8
+_INITIAL_429_DELAY_S = 0.5
+_MAX_429_DELAY_S = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +58,18 @@ class SettledEvent:
 
 class KalshiParseError(ValueError):
     pass
+
+
+def kxbtc_event_ticker(close_ts: datetime) -> str:
+    """KXBTC event ticker for an hourly close in America/New_York."""
+    local = _as_utc(close_ts).astimezone(_ET)
+    return (
+        f"{SERIES_TICKER}-"
+        f"{local.year % 100:02d}"
+        f"{_MONTH_ABBR[local.month - 1]}"
+        f"{local.day:02d}"
+        f"{local.hour:02d}"
+    )
 
 
 def parse_settled_kxbtc(
@@ -181,6 +213,27 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _unix(value: datetime) -> int:
+    return int(_as_utc(value).timestamp())
+
+
+def _hourly_closes(start: datetime, end: datetime) -> Iterator[datetime]:
+    """Yield America/New_York hour boundaries with close_ts in ``[start, end)``."""
+    start_utc = _as_utc(start)
+    end_utc = _as_utc(end)
+    local = start_utc.astimezone(_ET).replace(
+        minute=0, second=0, microsecond=0
+    )
+    if local.astimezone(timezone.utc) < start_utc:
+        local += timedelta(hours=1)
+    while True:
+        close = local.astimezone(timezone.utc)
+        if close >= end_utc:
+            return
+        yield close
+        local += timedelta(hours=1)
+
+
 class KalshiClient:
     """Public Kalshi market client.
 
@@ -188,31 +241,59 @@ class KalshiClient:
     ``timeout`` (auth headers can be added later on the same client).
     """
 
-    def __init__(self, http: httpx.Client) -> None:
+    def __init__(
+        self,
+        http: httpx.Client,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self._http = http
+        self._sleep = sleep
 
     def fetch_settled_kxbtc(
         self,
         *,
-        start: datetime | None = None,
-        end: datetime | None = None,
+        start: datetime,
+        end: datetime,
     ) -> tuple[SettledEvent, ...]:
-        markets = self._fetch_all_settled_markets()
-        return parse_settled_kxbtc(markets, start=start, end=end)
+        start_utc = _as_utc(start)
+        end_utc = _as_utc(end)
+        if start_utc >= end_utc:
+            raise ValueError("start must be earlier than end")
+        markets = self._fetch_settled_markets(start_utc, end_utc)
+        return parse_settled_kxbtc(markets, start=start_utc, end=end_utc)
 
-    def _fetch_all_settled_markets(self) -> list[dict[str, Any]]:
+    def _fetch_settled_markets(
+        self, start: datetime, end: datetime
+    ) -> list[dict[str, Any]]:
         by_ticker: dict[str, dict[str, Any]] = {}
+        # Live /markets: close_ts filters (not compatible with status=settled).
+        # min is "after" so pass start-1 to keep closes at start; client
+        # still enforces half-open [start, end).
         for market in self._iter_markets(
             "/markets",
-            {"series_ticker": SERIES_TICKER, "status": "settled"},
+            {
+                "series_ticker": SERIES_TICKER,
+                "min_close_ts": str(_unix(start) - 1),
+                "max_close_ts": str(_unix(end)),
+            },
         ):
             by_ticker[market["ticker"]] = market
-        for market in self._iter_markets(
-            "/historical/markets",
-            {"series_ticker": SERIES_TICKER},
-        ):
-            by_ticker.setdefault(market["ticker"], market)
+
+        cutoff = self._market_settled_cutoff()
+        if start < cutoff:
+            hist_end = min(end, cutoff)
+            for close in _hourly_closes(start, hist_end):
+                for market in self._iter_markets(
+                    "/historical/markets",
+                    {"event_ticker": kxbtc_event_ticker(close)},
+                ):
+                    by_ticker.setdefault(market["ticker"], market)
         return list(by_ticker.values())
+
+    def _market_settled_cutoff(self) -> datetime:
+        payload = self._get_json("/historical/cutoff")
+        return _parse_utc(payload["market_settled_ts"])
 
     def _iter_markets(
         self, path: str, params: Mapping[str, str]
@@ -222,12 +303,25 @@ class KalshiClient:
             query = {**params, "limit": str(PAGE_LIMIT)}
             if cursor:
                 query["cursor"] = cursor
-            response = self._http.get(path, params=query)
-            response.raise_for_status()
-            payload = response.json()
+            payload = self._get_json(path, params=query)
             for market in payload.get("markets", []):
                 if isinstance(market, dict):
                     yield market
             cursor = payload.get("cursor") or None
             if not cursor:
                 break
+
+    def _get_json(
+        self, path: str, *, params: Mapping[str, str] | None = None
+    ) -> Any:
+        delay = _INITIAL_429_DELAY_S
+        for attempt in range(_MAX_429_ATTEMPTS):
+            response = self._http.get(path, params=params)
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response.json()
+            if attempt == _MAX_429_ATTEMPTS - 1:
+                response.raise_for_status()
+            self._sleep(delay)
+            delay = min(delay * 2, _MAX_429_DELAY_S)
+        raise AssertionError("unreachable")

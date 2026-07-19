@@ -70,8 +70,17 @@ def test_run_backfill_half_open(tmp_path: Path) -> None:
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/historical/cutoff"):
+            return httpx.Response(
+                200,
+                json={
+                    "market_settled_ts": "2000-01-01T00:00:00Z",
+                    "trades_created_ts": "2000-01-01T00:00:00Z",
+                    "orders_updated_ts": "2000-01-01T00:00:00Z",
+                },
+            )
         if request.url.path.endswith("/historical/markets"):
-            return httpx.Response(200, json={"cursor": "", "markets": []})
+            return httpx.Response(500, json={"message": "should not call"})
         return httpx.Response(200, json=payload)
 
     db_path = tmp_path / "test.sqlite"
@@ -142,8 +151,17 @@ def test_cli_backfill_mocked(
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/historical/cutoff"):
+            return httpx.Response(
+                200,
+                json={
+                    "market_settled_ts": "2000-01-01T00:00:00Z",
+                    "trades_created_ts": "2000-01-01T00:00:00Z",
+                    "orders_updated_ts": "2000-01-01T00:00:00Z",
+                },
+            )
         if request.url.path.endswith("/historical/markets"):
-            return httpx.Response(200, json={"cursor": "", "markets": []})
+            return httpx.Response(500, json={"message": "should not call"})
         return httpx.Response(200, json=payload)
 
     transport = httpx.MockTransport(handler)

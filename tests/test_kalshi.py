@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -13,6 +14,7 @@ from bob.kalshi import (
     BASE_URL,
     KalshiClient,
     KalshiParseError,
+    kxbtc_event_ticker,
     parse_settled_kxbtc,
 )
 
@@ -24,6 +26,14 @@ WINNER = "KXBTC-99APR0100-B420"
 LOWER = "KXBTC-99APR0100-T100"
 UPPER = "KXBTC-99APR0100-T999999"
 EXPIRATION = "420.69"
+START = CLOSE
+END = datetime(2099, 4, 2, tzinfo=timezone.utc)
+# Range is after this cutoff → live only, no historical scan.
+OLD_CUTOFF = {
+    "market_settled_ts": "2000-01-01T00:00:00Z",
+    "trades_created_ts": "2000-01-01T00:00:00Z",
+    "orders_updated_ts": "2000-01-01T00:00:00Z",
+}
 
 
 def _load_markets() -> list[dict]:
@@ -121,7 +131,13 @@ def test_parse_rejects_non_finalized() -> None:
         parse_settled_kxbtc(markets)
 
 
-def test_fetch_paginates_and_merges_sources() -> None:
+def test_kxbtc_event_ticker_uses_eastern_hour() -> None:
+    close = datetime(2026, 7, 16, 0, 0, tzinfo=timezone.utc)  # 20:00 EDT
+    assert kxbtc_event_ticker(close) == "KXBTC-26JUL1520"
+    assert close.astimezone(ZoneInfo("America/New_York")).hour == 20
+
+
+def test_fetch_date_bounds_live_and_skips_historical() -> None:
     page1 = {
         "cursor": "next",
         "markets": [
@@ -135,30 +151,24 @@ def test_fetch_paginates_and_merges_sources() -> None:
             _bracket(UPPER, result="no", floor_strike=999999),
         ],
     }
-    historical = {
-        "cursor": "",
-        "markets": [
-            # Duplicate ticker from live source — should dedupe, keep first.
-            _bracket(WINNER, result="yes", floor_strike=400, cap_strike=499.99),
-        ],
-    }
-
     calls: list[tuple[str, httpx.QueryParams]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append((request.url.path, request.url.params))
         path = request.url.path
-        if path.endswith("/markets") and not path.endswith("/historical/markets"):
+        if path.endswith("/historical/cutoff"):
+            return httpx.Response(200, json=OLD_CUTOFF)
+        if path.endswith("/historical/markets"):
+            return httpx.Response(500, json={"message": "should not call"})
+        if path.endswith("/markets"):
             if request.url.params.get("cursor") == "next":
                 return httpx.Response(200, json=page2)
             return httpx.Response(200, json=page1)
-        if path.endswith("/historical/markets"):
-            return httpx.Response(200, json=historical)
         return httpx.Response(404, json={"message": "not found"})
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
-        events = KalshiClient(http).fetch_settled_kxbtc()
+        events = KalshiClient(http).fetch_settled_kxbtc(start=START, end=END)
 
     assert len(events) == 1
     assert len(events[0].brackets) == 3
@@ -167,56 +177,146 @@ def test_fetch_paginates_and_merges_sources() -> None:
         for path, params in calls
         if path.endswith("/markets") and not path.endswith("/historical/markets")
     ]
-    hist_calls = [
-        path for path, _ in calls if path.endswith("/historical/markets")
-    ]
     assert len(live_calls) == 2
     assert live_calls[1][1].get("cursor") == "next"
-    assert len(hist_calls) == 1
     assert live_calls[0][1]["series_ticker"] == "KXBTC"
-    assert live_calls[0][1]["status"] == "settled"
+    assert "status" not in live_calls[0][1]
+    assert live_calls[0][1]["min_close_ts"] == str(int(START.timestamp()) - 1)
+    assert live_calls[0][1]["max_close_ts"] == str(int(END.timestamp()))
     assert live_calls[0][1]["limit"] == "1000"
+    assert not any(path.endswith("/historical/markets") for path, _ in calls)
 
 
-def test_fetch_paginates_historical() -> None:
-    live = {"cursor": "", "markets": []}
+def test_fetch_historical_by_event_ticker() -> None:
+    # 2024-04-01 00:00 EDT == 04:00 UTC
+    start = datetime(2024, 4, 1, 4, 0, tzinfo=timezone.utc)
+    end = datetime(2024, 4, 1, 5, 0, tzinfo=timezone.utc)
+    event = kxbtc_event_ticker(start)
+    assert event == "KXBTC-24APR0100"
+    close_iso = "2024-04-01T04:00:00Z"
     hist1 = {
         "cursor": "h2",
         "markets": [
-            _bracket(WINNER, result="yes", floor_strike=400, cap_strike=499.99),
+            {
+                "ticker": f"{event}-B420",
+                "event_ticker": event,
+                "status": "finalized",
+                "result": "yes",
+                "close_time": close_iso,
+                "expiration_value": EXPIRATION,
+                "floor_strike": 400,
+                "cap_strike": 499.99,
+            },
         ],
     }
     hist2 = {
         "cursor": "",
         "markets": [
-            _bracket(LOWER, result="no", cap_strike=100),
-            _bracket(UPPER, result="no", floor_strike=999999),
+            {
+                "ticker": f"{event}-T100",
+                "event_ticker": event,
+                "status": "finalized",
+                "result": "no",
+                "close_time": close_iso,
+                "expiration_value": EXPIRATION,
+                "cap_strike": 100,
+            },
+            {
+                "ticker": f"{event}-T999999",
+                "event_ticker": event,
+                "status": "finalized",
+                "result": "no",
+                "close_time": close_iso,
+                "expiration_value": EXPIRATION,
+                "floor_strike": 999999,
+            },
         ],
     }
-    hist_cursors: list[str | None] = []
+    hist_calls: list[httpx.QueryParams] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
+        if path.endswith("/historical/cutoff"):
+            return httpx.Response(
+                200,
+                json={
+                    "market_settled_ts": "2025-01-01T00:00:00Z",
+                    "trades_created_ts": "2025-01-01T00:00:00Z",
+                    "orders_updated_ts": "2025-01-01T00:00:00Z",
+                },
+            )
         if path.endswith("/historical/markets"):
-            hist_cursors.append(request.url.params.get("cursor"))
+            hist_calls.append(request.url.params)
             if request.url.params.get("cursor") == "h2":
                 return httpx.Response(200, json=hist2)
             return httpx.Response(200, json=hist1)
-        return httpx.Response(200, json=live)
+        if path.endswith("/markets"):
+            return httpx.Response(200, json={"cursor": "", "markets": []})
+        return httpx.Response(404, json={"message": "not found"})
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
-        events = KalshiClient(http).fetch_settled_kxbtc()
+        events = KalshiClient(http).fetch_settled_kxbtc(start=start, end=end)
+
     assert len(events) == 1
-    assert len(events[0].brackets) == 3
-    assert hist_cursors == [None, "h2"]
+    assert events[0].event.event_ticker == event
+    assert len(hist_calls) == 2
+    assert hist_calls[0]["event_ticker"] == event
+    assert "series_ticker" not in hist_calls[0]
+    assert hist_calls[1].get("cursor") == "h2"
+
+
+def test_fetch_retries_429() -> None:
+    sleeps: list[float] = []
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/historical/cutoff"):
+            return httpx.Response(200, json=OLD_CUTOFF)
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            return httpx.Response(429, json={"error": "too many requests"})
+        return httpx.Response(
+            200,
+            json={
+                "cursor": "",
+                "markets": [
+                    _bracket(
+                        WINNER, result="yes", floor_strike=400, cap_strike=499.99
+                    ),
+                    _bracket(LOWER, result="no", cap_strike=100),
+                    _bracket(UPPER, result="no", floor_strike=999999),
+                ],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
+        events = KalshiClient(http, sleep=sleeps.append).fetch_settled_kxbtc(
+            start=START, end=END
+        )
+    assert len(events) == 1
+    assert attempts["n"] == 3
+    assert sleeps == [0.5, 1.0]
+
+
+def test_fetch_requires_ordered_bounds() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=OLD_CUTOFF)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
+        with pytest.raises(ValueError, match="earlier"):
+            KalshiClient(http).fetch_settled_kxbtc(start=END, end=START)
 
 
 def test_fetch_raises_for_status() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/historical/cutoff"):
+            return httpx.Response(200, json=OLD_CUTOFF)
         return httpx.Response(500, json={"message": "boom"})
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
         with pytest.raises(httpx.HTTPStatusError):
-            KalshiClient(http).fetch_settled_kxbtc()
+            KalshiClient(http).fetch_settled_kxbtc(start=START, end=END)
