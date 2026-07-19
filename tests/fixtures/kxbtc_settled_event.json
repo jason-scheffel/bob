@@ -1,0 +1,32 @@
+[
+  {
+    "ticker": "KXBTC-99APR0100-T100",
+    "event_ticker": "KXBTC-99APR0100",
+    "status": "finalized",
+    "result": "no",
+    "close_time": "2099-04-01T00:00:00Z",
+    "expiration_value": "420.69",
+    "cap_strike": 100,
+    "floor_strike": null
+  },
+  {
+    "ticker": "KXBTC-99APR0100-B420",
+    "event_ticker": "KXBTC-99APR0100",
+    "status": "finalized",
+    "result": "yes",
+    "close_time": "2099-04-01T00:00:00Z",
+    "expiration_value": "420.69",
+    "floor_strike": 400,
+    "cap_strike": 499.99
+  },
+  {
+    "ticker": "KXBTC-99APR0100-T999999",
+    "event_ticker": "KXBTC-99APR0100",
+    "status": "finalized",
+    "result": "no",
+    "close_time": "2099-04-01T00:00:00Z",
+    "expiration_value": "420.69",
+    "floor_strike": 999999,
+    "cap_strike": null
+  }
+]
