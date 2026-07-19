@@ -75,6 +75,23 @@ def test_parse_filters_close_time_half_open() -> None:
     assert len(parse_settled_kxbtc(markets, start=None, end=CLOSE)) == 0
 
 
+def test_parse_rejects_naive_bounds() -> None:
+    markets = _load_markets()
+    naive = datetime(2099, 4, 1)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        parse_settled_kxbtc(markets, start=naive)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        parse_settled_kxbtc(markets, end=naive)
+
+
+def test_parse_rejects_naive_close_time() -> None:
+    markets = _load_markets()
+    for market in markets:
+        market["close_time"] = "2099-04-01T00:00:00"
+    with pytest.raises(ValueError, match="timezone-aware"):
+        parse_settled_kxbtc(markets)
+
+
 def test_parse_skips_invalid_events_outside_range() -> None:
     markets = _load_markets()
     for market in markets:
