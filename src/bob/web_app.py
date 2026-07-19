@@ -268,18 +268,26 @@ def _browse_tab(connection, report: CoverageReport) -> None:
             f"{format_bracket_range(winner.floor_strike, winner.cap_strike)}"
         )
 
+    brackets_frame = pd.DataFrame(
+        [
+            {
+                "Range": format_bracket_range(
+                    bracket.floor_strike, bracket.cap_strike
+                ),
+                "Result": "Won" if bracket.won else "Lost",
+            }
+            for bracket in brackets
+        ]
+    )
+
+    def _style_result(column: pd.Series) -> list[str]:
+        return [
+            "background-color: #2d6a4f; color: white" if value == "Won" else ""
+            for value in column
+        ]
+
     st.dataframe(
-        pd.DataFrame(
-            [
-                {
-                    "Range": format_bracket_range(
-                        bracket.floor_strike, bracket.cap_strike
-                    ),
-                    "Result": "Won" if bracket.won else "Lost",
-                }
-                for bracket in brackets
-            ]
-        ),
+        brackets_frame.style.apply(_style_result, subset=["Result"]),
         width="stretch",
         hide_index=True,
     )
