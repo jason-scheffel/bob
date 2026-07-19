@@ -19,11 +19,15 @@ from bob.browse import (
 )
 from bob.cli import app
 from bob.db import (
+    MARKET_HOUR_MINUTES,
     MinuteBar,
     acknowledge_candle_hour_gap,
     connect,
+    expected_market_minute_ends,
     initialize_schema,
+    normalize_market_quote_hour,
     store_btc_candles,
+    store_market_candles,
     store_settled_events,
 )
 from bob.kalshi import (
@@ -232,7 +236,7 @@ def test_load_coverage_counts_any_status() -> None:
     assert report.days[0].complete == 1
     assert report.days[0].flagged == 2
     assert report.days[0].status == "partial"
-    assert report.days[0].label() == "1✓ 2· / 0c"
+    assert report.days[0].label() == "1✓ 2· / 0c / 0q/2"
     assert report.complete_events == 1
     assert report.flagged_events == 2
     assert "1 complete" in summarize_report(report)
@@ -259,6 +263,28 @@ def _seed_candle_hours(connection, day: date, hours: range) -> None:
                 )
             )
     store_btc_candles(connection, bars)
+
+
+def _seed_quote_hours(connection, closes: list[datetime]) -> None:
+    """Null-pad complete market quote hours for each event's brackets."""
+    for close in closes:
+        close_ts = int(close.timestamp())
+        tickers = [
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT b.ticker FROM brackets b
+                JOIN events e ON e.event_ticker = b.event_ticker
+                WHERE e.close_ts = ?
+                """,
+                (close_ts,),
+            )
+        ]
+        for ticker in tickers:
+            store_market_candles(
+                connection,
+                normalize_market_quote_hour(ticker, close_ts, ()),
+            )
 
 
 def test_acknowledged_gap_counts_toward_green() -> None:
@@ -303,8 +329,17 @@ def test_acknowledged_gap_counts_toward_green() -> None:
     assert report.days[0].candle_hours == 23
     assert report.days[0].gappy_hours == 1
     assert report.days[0].accounted_candle_hours == 24
+    assert report.days[0].status == "partial"
+    assert report.days[0].label() == "24✓ / 23c 1g / 0q/24"
+
+    _seed_quote_hours(
+        connection,
+        [datetime(2099, 4, 1, h, tzinfo=timezone.utc) for h in range(HOURS_PER_DAY)],
+    )
+    report = load_coverage(connection)
+    assert report.days[0].quote_hours == 24
     assert report.days[0].status == "full"
-    assert report.days[0].label() == "24✓ / 23c 1g"
+    assert report.days[0].label() == "24✓ / 23c 1g / 24q"
     month = months_from_report(report)[0]
     assert month.status == "full"
     assert month.candles_cell() == "23c+1g/24"
@@ -363,14 +398,23 @@ def test_full_day_with_flags_needs_candles_for_green() -> None:
     assert report.days[0].status == "partial"
     assert report.days[0].complete == 20
     assert report.days[0].flagged == 4
-    assert report.days[0].label() == "20✓ 4· / 0c"
+    assert report.days[0].label() == "20✓ 4· / 0c / 0q/20"
     assert report.unknown_events == 0
 
     _seed_candle_hours(connection, date(2099, 4, 1), range(24))
     report = load_coverage(connection)
     assert report.days[0].candle_hours == 24
+    assert report.days[0].status == "partial"
+    assert report.days[0].label() == "20✓ 4· / 24c / 0q/20"
+
+    _seed_quote_hours(
+        connection,
+        [datetime(2099, 4, 1, h, tzinfo=timezone.utc) for h in range(20)],
+    )
+    report = load_coverage(connection)
+    assert report.days[0].quote_hours == 20
     assert report.days[0].status == "full"
-    assert report.days[0].label() == "20✓ 4· / 24c"
+    assert report.days[0].label() == "20✓ 4· / 24c / 20q"
     connection.close()
 
 
@@ -383,7 +427,26 @@ def test_load_coverage_candle_only_day() -> None:
     assert report.days[0].events == 0
     assert report.days[0].candle_hours == 12
     assert report.days[0].status == "partial"
-    assert report.days[0].label() == "0✓ / 12c"
+    assert report.days[0].label() == "0✓ / 12c / 0q"
+    connection.close()
+
+
+def test_load_coverage_counts_quote_complete_hours() -> None:
+    connection = connect(":memory:")
+    initialize_schema(connection)
+    close = datetime(2099, 4, 1, 12, tzinfo=timezone.utc)
+    store_settled_events(connection, [_event(close)])
+    close_ts = int(close.timestamp())
+    ticker = "KXBTC-99APR0112-B420"
+    hour = normalize_market_quote_hour(ticker, close_ts, ())
+    assert len(hour) == MARKET_HOUR_MINUTES
+    assert len(expected_market_minute_ends(close_ts)) == MARKET_HOUR_MINUTES
+    store_market_candles(connection, hour)
+    report = load_coverage(connection)
+    assert report.days[0].quote_expected == 1
+    assert report.days[0].quote_hours == 1
+    assert report.days[0].label() == "1✓ / 0c / 1q"
+    assert "quotes 1/1" in summarize_report(report)
     connection.close()
 
 

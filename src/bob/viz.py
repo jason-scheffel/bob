@@ -36,6 +36,8 @@ class DayCoverage:
     flagged: int
     candle_hours: int = 0
     gappy_hours: int = 0
+    quote_hours: int = 0
+    quote_expected: int = 0
 
     @property
     def events(self) -> int:
@@ -57,23 +59,33 @@ class DayCoverage:
 
     @property
     def status(self) -> str:
-        """Green when events and accounted candles both meet expected."""
-        if self.events <= 0 and self.accounted_candle_hours <= 0:
+        """Green when events, BRTI candles, and market quotes all meet expected."""
+        if (
+            self.events <= 0
+            and self.accounted_candle_hours <= 0
+            and self.quote_hours <= 0
+        ):
             return "empty"
         events_full = self.events >= self.expected
         candles_full = self.accounted_candle_hours >= self.expected
-        if events_full and candles_full:
+        quotes_full = (
+            self.quote_expected <= 0 or self.quote_hours >= self.quote_expected
+        )
+        if events_full and candles_full and quotes_full:
             return "full"
         return "partial"
 
     def label(self) -> str:
-        """Short cell label: events then candles (c) and gaps (g)."""
+        """Short cell label: events, BRTI candles (c/g), market quotes (q)."""
         body = f"{self.complete}✓"
         if self.flagged:
             body += f" {self.flagged}·"
         body += f" / {self.candle_hours}c"
         if self.gappy_hours:
             body += f" {self.gappy_hours}g"
+        body += f" / {self.quote_hours}q"
+        if self.quote_expected and self.quote_hours != self.quote_expected:
+            body += f"/{self.quote_expected}"
         return body
 
     def candles_cell(self, *, expected: int | None = None) -> str:
@@ -82,6 +94,10 @@ class DayCoverage:
             return f"{self.candle_hours}c+{self.gappy_hours}g/{denom}"
         return f"{self.accounted_candle_hours}/{denom}"
 
+    def quotes_cell(self) -> str:
+        if self.quote_expected <= 0:
+            return f"{self.quote_hours}/—"
+        return f"{self.quote_hours}/{self.quote_expected}"
 
 @dataclass(frozen=True, slots=True)
 class CoverageReport:
@@ -99,7 +115,11 @@ class CoverageReport:
     @property
     def days_with_data(self) -> int:
         return sum(
-            1 for day in self.days if day.events > 0 or day.accounted_candle_hours > 0
+            1
+            for day in self.days
+            if day.events > 0
+            or day.accounted_candle_hours > 0
+            or day.quote_hours > 0
         )
 
     @property
@@ -107,7 +127,9 @@ class CoverageReport:
         return sum(
             1
             for day in self.days
-            if day.events <= 0 and day.accounted_candle_hours <= 0
+            if day.events <= 0
+            and day.accounted_candle_hours <= 0
+            and day.quote_hours <= 0
         )
 
     @property
@@ -149,6 +171,19 @@ class CoverageReport:
         return max(0, self.expected_events - self.covered_candle_hours)
 
     @property
+    def quote_hours(self) -> int:
+        return sum(day.quote_hours for day in self.days)
+
+    @property
+    def quote_expected(self) -> int:
+        return sum(day.quote_expected for day in self.days)
+
+    @property
+    def covered_quote_hours(self) -> int:
+        """Quote-complete event hours, capped by each day's quote_expected."""
+        return sum(min(day.quote_hours, day.quote_expected) for day in self.days)
+
+    @property
     def overall_fraction(self) -> float:
         """Mean of event and candle accounted fractions."""
         if self.expected_events == 0:
@@ -171,7 +206,11 @@ class MonthCoverage:
     @property
     def days_with_data(self) -> int:
         return sum(
-            1 for day in self.days if day.events > 0 or day.accounted_candle_hours > 0
+            1
+            for day in self.days
+            if day.events > 0
+            or day.accounted_candle_hours > 0
+            or day.quote_hours > 0
         )
 
     @property
@@ -179,7 +218,9 @@ class MonthCoverage:
         return sum(
             1
             for day in self.days
-            if day.events <= 0 and day.accounted_candle_hours <= 0
+            if day.events <= 0
+            and day.accounted_candle_hours <= 0
+            and day.quote_hours <= 0
         )
 
     @property
@@ -211,6 +252,18 @@ class MonthCoverage:
         return sum(min(day.accounted_candle_hours, day.expected) for day in self.days)
 
     @property
+    def quote_hours(self) -> int:
+        return sum(day.quote_hours for day in self.days)
+
+    @property
+    def quote_expected(self) -> int:
+        return sum(day.quote_expected for day in self.days)
+
+    @property
+    def covered_quote_hours(self) -> int:
+        return sum(min(day.quote_hours, day.quote_expected) for day in self.days)
+
+    @property
     def overall_fraction(self) -> float:
         if self.expected_events == 0:
             return 0.0
@@ -221,12 +274,19 @@ class MonthCoverage:
     @property
     def status(self) -> str:
         if not self.days or (
-            self.covered_events <= 0 and self.covered_candle_hours <= 0
+            self.covered_events <= 0
+            and self.covered_candle_hours <= 0
+            and self.covered_quote_hours <= 0
         ):
             return "empty"
+        quotes_full = (
+            self.quote_expected <= 0
+            or self.covered_quote_hours >= self.quote_expected
+        )
         if (
             self.covered_events >= self.expected_events
             and self.covered_candle_hours >= self.expected_events
+            and quotes_full
         ):
             return "full"
         return "partial"
@@ -235,6 +295,11 @@ class MonthCoverage:
         if self.gappy_hours:
             return f"{self.candle_hours}c+{self.gappy_hours}g/{self.expected_events}"
         return f"{self.covered_candle_hours}/{self.expected_events}"
+
+    def quotes_cell(self) -> str:
+        if self.quote_expected <= 0:
+            return f"{self.quote_hours}/—"
+        return f"{self.covered_quote_hours}/{self.quote_expected}"
 
 
 def _complete_hour_starts(
@@ -277,6 +342,78 @@ def _gappy_candle_hours_by_day(
     return by_day
 
 
+def _has_market_candles_table(connection: sqlite3.Connection) -> bool:
+    row = connection.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type = 'table' AND name = 'market_candles'
+        """
+    ).fetchone()
+    return row is not None
+
+
+def _quote_hours_by_day(
+    connection: sqlite3.Connection,
+) -> tuple[dict[date, int], dict[date, int]]:
+    """Return ``(quote_complete_hours, quote_expected_hours)`` by UTC day.
+
+    An event-hour is quote-expected when it has ≥1 bracket. It is
+    quote-complete when every bracket ticker has all 60 ``market_candles``
+    slots for that hour (null placeholders count).
+    """
+    expected: dict[date, int] = defaultdict(int)
+    complete: dict[date, int] = defaultdict(int)
+    if not _has_market_candles_table(connection):
+        return complete, expected
+
+    expected_rows = connection.execute(
+        """
+        SELECT e.close_ts
+        FROM events e
+        WHERE EXISTS (
+            SELECT 1 FROM brackets b WHERE b.event_ticker = e.event_ticker
+        )
+        """
+    ).fetchall()
+    for (close_ts,) in expected_rows:
+        day = datetime.fromtimestamp(int(close_ts), tz=timezone.utc).date()
+        expected[day] += 1
+
+    complete_rows = connection.execute(
+        """
+        WITH complete_tickers AS (
+            SELECT
+                ticker,
+                ((end_ts - 1) / 3600) * 3600 AS hour_start
+            FROM market_candles
+            GROUP BY ticker, hour_start
+            HAVING COUNT(*) = 60
+        ),
+        event_brackets AS (
+            SELECT
+                e.event_ticker,
+                e.close_ts,
+                e.close_ts - 3600 AS hour_start,
+                COUNT(b.ticker) AS n_brackets
+            FROM events e
+            JOIN brackets b ON b.event_ticker = e.event_ticker
+            GROUP BY e.event_ticker, e.close_ts
+        )
+        SELECT eb.close_ts
+        FROM event_brackets eb
+        JOIN brackets b ON b.event_ticker = eb.event_ticker
+        LEFT JOIN complete_tickers ct
+            ON ct.ticker = b.ticker AND ct.hour_start = eb.hour_start
+        GROUP BY eb.event_ticker, eb.close_ts, eb.n_brackets
+        HAVING COUNT(ct.ticker) = eb.n_brackets
+        """
+    ).fetchall()
+    for (close_ts,) in complete_rows:
+        day = datetime.fromtimestamp(int(close_ts), tz=timezone.utc).date()
+        complete[day] += 1
+    return complete, expected
+
+
 def load_coverage(connection: sqlite3.Connection) -> CoverageReport:
     event_rows = connection.execute(
         "SELECT close_ts, status FROM events ORDER BY close_ts"
@@ -284,6 +421,7 @@ def load_coverage(connection: sqlite3.Connection) -> CoverageReport:
     complete_hours = _complete_hour_starts(connection)
     candle_by_day = _complete_candle_hours_by_day(complete_hours)
     gappy_by_day = _gappy_candle_hours_by_day(connection, complete_hours)
+    quote_by_day, quote_expected_by_day = _quote_hours_by_day(connection)
 
     complete: dict[date, int] = defaultdict(int)
     flagged: dict[date, int] = defaultdict(int)
@@ -294,7 +432,14 @@ def load_coverage(connection: sqlite3.Connection) -> CoverageReport:
         else:
             flagged[day] += 1
 
-    days_present = set(complete) | set(flagged) | set(candle_by_day) | set(gappy_by_day)
+    days_present = (
+        set(complete)
+        | set(flagged)
+        | set(candle_by_day)
+        | set(gappy_by_day)
+        | set(quote_by_day)
+        | set(quote_expected_by_day)
+    )
     if not days_present:
         return CoverageReport(days=(), total_events=0)
 
@@ -310,6 +455,8 @@ def load_coverage(connection: sqlite3.Connection) -> CoverageReport:
                 flagged=flagged.get(cursor, 0),
                 candle_hours=candle_by_day.get(cursor, 0),
                 gappy_hours=gappy_by_day.get(cursor, 0),
+                quote_hours=quote_by_day.get(cursor, 0),
+                quote_expected=quote_expected_by_day.get(cursor, 0),
             )
         )
         cursor += timedelta(days=1)
@@ -318,7 +465,6 @@ def load_coverage(connection: sqlite3.Connection) -> CoverageReport:
         days=tuple(days),
         total_events=sum(day.events for day in days),
     )
-
 
 def filter_coverage(
     report: CoverageReport,
@@ -367,12 +513,17 @@ def summarize_report(report: CoverageReport, *, label: str = "Range") -> str:
         )
     else:
         candles = f"{report.covered_candle_hours}/{report.expected_events}"
+    if report.quote_expected <= 0:
+        quotes = f"{report.quote_hours}/—"
+    else:
+        quotes = f"{report.covered_quote_hours}/{report.quote_expected}"
     return (
         f"{label}: {report.first_day} → {report.last_day}  ·  "
         f"{report.complete_events} complete  ·  "
         f"{report.flagged_events} flagged  ·  "
         f"{report.unknown_events} unknown  ·  "
         f"candles {candles}  ·  "
+        f"quotes {quotes}  ·  "
         f"accounted {report.covered_events}/{report.expected_events} events  ·  "
         f"combined {combined}"
     )

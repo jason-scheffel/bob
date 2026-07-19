@@ -29,6 +29,7 @@ from bob.research.common import (
     load_candle_ohlc,
     price_in_bracket,
 )
+from bob.research.trades import TradeObservation
 
 STRATEGY = "s2"
 STRATEGY_SUMMARY = "stable-center bracket hold"
@@ -83,6 +84,7 @@ class Report:
     strategy: str
     side: Side
     minutes: tuple[MinuteStats, ...]
+    trades: tuple[TradeObservation, ...]
 
 
 def _classify_match_count(count: int) -> ExclusionReason | None:
@@ -177,6 +179,7 @@ def evaluate(
     losses = Counter({minute: 0 for minute in minute_list})
     exclusions: dict[int, Counter[str]] = {minute: Counter() for minute in minute_list}
     abstentions: dict[int, Counter[str]] = {minute: Counter() for minute in minute_list}
+    trades: list[TradeObservation] = []
 
     for event in events:
         brackets = load_brackets(connection, event.event_ticker)
@@ -245,10 +248,22 @@ def evaluate(
                 abstentions[minute]["near_edge"] += 1
                 continue
 
-            if _outcome_win(selected_won=selected.won, side=side):
+            end_ts = checkpoint_end_ts(event.close_ts, minute)
+            won = _outcome_win(selected_won=selected.won, side=side)
+            if won:
                 wins[minute] += 1
             else:
                 losses[minute] += 1
+            trades.append(
+                TradeObservation(
+                    event_ticker=event.event_ticker,
+                    market_ticker=selected.ticker,
+                    minute=minute,
+                    end_ts=end_ts,
+                    side=side,
+                    won=won,
+                )
+            )
 
     stats = []
     for minute in minute_list:
@@ -267,4 +282,5 @@ def evaluate(
         strategy=STRATEGY,
         side=side,
         minutes=tuple(stats),
+        trades=tuple(trades),
     )

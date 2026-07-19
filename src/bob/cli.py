@@ -33,21 +33,28 @@ from bob.db import (
     event_tickers_in_close_range,
     hours_needing_candles,
     initialize_schema,
+    market_candle_inventory,
     store_btc_candles,
     store_settled_events,
 )
 from bob.gate import require_gate
 from bob.kalshi import (
+    BASE_URL,
+    DEFAULT_MARKET_CANDLE_RPS,
     DEFAULT_MAX_RPS,
     KalshiAPIError,
     KalshiAuthError,
     KalshiClient,
     KalshiCredentialsError,
+    KalshiParseError,
     expected_kxbtc_event_tickers,
     load_dotenv,
     require_kalshi_credentials,
 )
+from bob.market_candles import run_backfill_market_candles
 from bob.research import s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13
+from bob.research.pnl import score_trades_by_minute
+from bob.research.runner import run_all_strategy_pnl
 from bob.research.s1 import Side
 from bob.research.s12 import DEFAULT_TAU
 from bob.research.s13 import DEFAULT_P_STAR
@@ -61,7 +68,7 @@ app = typer.Typer(
 research_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
-    help="Offline outcome-accuracy studies (named strategies: s1–s13).",
+    help="Offline quote-sim research (named strategies: s1–s13).",
 )
 app.add_typer(research_app, name="research")
 console = Console(stderr=True)
@@ -395,6 +402,131 @@ def backfill(
     )
 
 
+@app.command("backfill-market-candles")
+def backfill_market_candles(
+    start: Annotated[
+        datetime,
+        typer.Option(
+            ...,
+            help="UTC start of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ],
+    end: Annotated[
+        datetime,
+        typer.Option(
+            ...,
+            help="UTC end of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ],
+    db: Annotated[
+        Path,
+        typer.Option(help="SQLite path."),
+    ] = DEFAULT_DB,
+    rps: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Max HTTP requests/sec for market quote candles "
+                "(separate from CF/BRTI backfill). Use 0 to disable pacing."
+            ),
+        ),
+    ] = DEFAULT_MARKET_CANDLE_RPS,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Refetch quote hours even when all 60 slots already exist.",
+        ),
+    ] = False,
+) -> None:
+    """Backfill 1m YES bid/ask quote candles into market_candles."""
+    require_gate()
+    load_dotenv()
+    if start >= end:
+        console.print("[red]Error:[/red] --start must be earlier than --end")
+        raise typer.Exit(code=2)
+    if rps < 0:
+        console.print("[red]Error:[/red] --rps must be >= 0")
+        raise typer.Exit(code=2)
+    if not db.is_file():
+        console.print(f"[red]Error:[/red] database not found: {db}")
+        raise typer.Exit(code=2)
+
+    connection = connect(db)
+    try:
+        initialize_schema(connection)
+        inventory = market_candle_inventory(
+            connection, start, end, force=force
+        )
+        console.print(
+            "inventory  "
+            f"{inventory.events} events, {inventory.markets} markets, "
+            f"~{inventory.expected_rows} rows, "
+            f"{inventory.needing_fetch} requests to fetch, "
+            f"{inventory.already_complete} already complete"
+        )
+        if inventory.needing_fetch == 0:
+            console.print("done  nothing to fetch")
+            return
+
+        started = time.monotonic()
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(compact=True, elapsed_when_finished=True),
+            console=console,
+            transient=False,
+            expand=True,
+        ) as progress:
+            task_id = progress.add_task(
+                "market quotes", total=inventory.needing_fetch
+            )
+
+            def on_progress(index: int, total: int, ticker: str) -> None:
+                progress.update(
+                    task_id,
+                    completed=index,
+                    description=ticker,
+                )
+
+            try:
+                with httpx.Client(base_url=BASE_URL, timeout=30.0) as http:
+                    counts = run_backfill_market_candles(
+                        connection,
+                        KalshiClient(http, max_rps=rps),
+                        start,
+                        end,
+                        force=force,
+                        on_progress=on_progress,
+                    )
+            except (
+                KalshiAuthError,
+                KalshiAPIError,
+                KalshiParseError,
+                httpx.HTTPError,
+            ) as exc:
+                console.print(f"[red]Error:[/red] {exc}")
+                raise typer.Exit(code=1) from exc
+            progress.update(task_id, description="done")
+    finally:
+        connection.close()
+
+    elapsed = time.monotonic() - started
+    req_rate = counts.fetched / elapsed if elapsed > 0 else 0.0
+    console.print(
+        f"done  fetched={counts.fetched} written={counts.written} "
+        f"skipped={counts.skipped} empty={counts.empty} "
+        f"errors={counts.errors}  ({req_rate:.2f} ticker/s)"
+    )
+
+
 def run_streamlit(db: Path) -> int:
     """Launch the local Streamlit coverage/browse UI for ``db``."""
     script = Path(__file__).resolve().parent / "web_app.py"
@@ -507,45 +639,71 @@ def parse_side(value: str) -> Side:
     raise typer.BadParameter("side must be 'yes' or 'no'")
 
 
+def _print_research_banner() -> None:
+    console.print(
+        "[dim]quote-sim · 1 contract · YES@ask / NO@(1−bid) · "
+        "gross only (no fees) · minute close ≠ proven fill[/dim]"
+    )
+
+
+def _fmt_return(pnl) -> str:
+    if pnl.return_on_premium is None:
+        return "—"
+    return f"{pnl.return_on_premium * 100:.1f}%"
+
+
+def _fmt_win_rate(pnl) -> str:
+    if pnl.win_rate is None:
+        return "—"
+    return f"{pnl.win_rate * 100:.1f}%"
+
+
 def _print_research_tables(
     *,
     strategy: str,
     summary: str,
     side: Side,
-    minutes,
+    by_minute,
+    outcome_minutes,
     abstention_attr: str | None = None,
 ) -> None:
-    table = Table(title=(f"{strategy} · {summary} · side={side} · outcome accuracy"))
+    _print_research_banner()
+    table = Table(title=f"{strategy} · {summary} · side={side}")
     table.add_column("minute", justify="right")
-    table.add_column("eligible", justify="right")
-    table.add_column("wins", justify="right")
-    table.add_column("losses", justify="right")
+    table.add_column("n", justify="right")
+    table.add_column("excl", justify="right")
+    table.add_column("premium", justify="right")
+    table.add_column("gross", justify="right")
+    table.add_column("return", justify="right")
     table.add_column("win_rate", justify="right")
     if abstention_attr is not None:
         table.add_column("abstained", justify="right")
-    for stats in minutes:
-        rate = "—" if stats.win_rate is None else f"{stats.win_rate * 100:.1f}%"
+    outcome_by_minute = {stats.minute: stats for stats in outcome_minutes}
+    for minute, pnl in by_minute:
         row = [
-            str(stats.minute),
-            str(stats.eligible),
-            str(stats.wins),
-            str(stats.losses),
-            rate,
+            str(minute),
+            str(pnl.quote_eligible),
+            str(pnl.quote_excluded),
+            f"{pnl.premium:.2f}",
+            f"{pnl.gross:.2f}",
+            _fmt_return(pnl),
+            _fmt_win_rate(pnl),
         ]
         if abstention_attr is not None:
-            row.append(str(getattr(stats, abstention_attr)))
+            stats = outcome_by_minute.get(minute)
+            row.append("—" if stats is None else str(getattr(stats, abstention_attr)))
         table.add_row(*row)
     console.print(table)
 
     exclusion_keys = sorted(
-        {reason for stats in minutes for reason in stats.exclusions}
+        {reason for stats in outcome_minutes for reason in stats.exclusions}
     )
     if exclusion_keys:
         excl = Table(title="Exclusions")
         excl.add_column("minute", justify="right")
         for key in exclusion_keys:
             excl.add_column(key, justify="right")
-        for stats in minutes:
+        for stats in outcome_minutes:
             excl.add_row(
                 str(stats.minute),
                 *(str(stats.exclusions.get(key, 0)) for key in exclusion_keys),
@@ -555,14 +713,14 @@ def _print_research_tables(
     if abstention_attr is None:
         return
     abstention_keys = sorted(
-        {reason for stats in minutes for reason in stats.abstentions}
+        {reason for stats in outcome_minutes for reason in stats.abstentions}
     )
     if abstention_keys:
         abst = Table(title="Abstentions")
         abst.add_column("minute", justify="right")
         for key in abstention_keys:
             abst.add_column(key, justify="right")
-        for stats in minutes:
+        for stats in outcome_minutes:
             abst.add_row(
                 str(stats.minute),
                 *(str(stats.abstentions.get(key, 0)) for key in abstention_keys),
@@ -646,13 +804,17 @@ def _register_research_strategy(
                 start=start,
                 end=end,
             )
+            by_minute = score_trades_by_minute(
+                connection, report.trades, minute_list
+            )
         finally:
             connection.close()
         _print_research_tables(
             strategy=report.strategy,
             summary=module.STRATEGY_SUMMARY,
             side=report.side,
-            minutes=report.minutes,
+            by_minute=by_minute,
+            outcome_minutes=report.minutes,
             abstention_attr="abstained" if has_abstentions else None,
         )
 
@@ -663,13 +825,13 @@ def _register_research_strategy(
 
 _register_research_strategy(
     s1,
-    docstring="s1: current-bracket hold-to-settlement outcome accuracy.",
+    docstring="s1: current-bracket hold-to-settlement (quote-sim).",
     minutes_help="Comma-separated minutes into the hour (1..59).",
     has_abstentions=False,
 )
 _register_research_strategy(
     s2,
-    docstring="s2: stable-center current-bracket hold-to-settlement accuracy.",
+    docstring="s2: stable-center current-bracket hold-to-settlement (quote-sim).",
     minutes_help=(
         "Comma-separated checkpoint minutes (5..59); uses prior "
         "4 minutes for stability."
@@ -678,55 +840,55 @@ _register_research_strategy(
 )
 _register_research_strategy(
     s3,
-    docstring="s3: linear-trend projected bracket hold-to-settlement accuracy.",
+    docstring="s3: linear-trend projected bracket hold-to-settlement (quote-sim).",
     minutes_help="Comma-separated checkpoint minutes (10..59).",
     has_abstentions=True,
 )
 _register_research_strategy(
     s4,
-    docstring="s4: half-reversion to hourly open hold-to-settlement accuracy.",
+    docstring="s4: half-reversion to hourly open hold-to-settlement (quote-sim).",
     minutes_help="Comma-separated checkpoint minutes (1..59).",
     has_abstentions=True,
 )
 _register_research_strategy(
     s5,
-    docstring="s5: volatility-buffered current-bracket hold accuracy.",
+    docstring="s5: volatility-buffered current-bracket hold (quote-sim).",
     minutes_help="Comma-separated checkpoint minutes (11..59).",
     has_abstentions=True,
 )
 _register_research_strategy(
     s6,
-    docstring="s6: directed adjacent-bracket breakout hold accuracy.",
+    docstring="s6: directed adjacent-bracket breakout hold (quote-sim).",
     minutes_help="Comma-separated checkpoint minutes (3..59).",
     has_abstentions=True,
 )
 _register_research_strategy(
     s7,
-    docstring="s7: dominant-bracket occupancy hold-to-settlement accuracy.",
+    docstring="s7: dominant-bracket occupancy hold-to-settlement (quote-sim).",
     minutes_help="Comma-separated checkpoint minutes (1..59).",
     has_abstentions=True,
 )
 _register_research_strategy(
     s8,
-    docstring="s8: horizon-confirmed current-bracket hold accuracy.",
+    docstring="s8: horizon-confirmed current-bracket hold (quote-sim).",
     minutes_help="Comma-separated checkpoint minutes (31..59).",
     has_abstentions=True,
 )
 _register_research_strategy(
     s9,
-    docstring="s9: matched-horizon excursion-buffered hold accuracy.",
+    docstring="s9: matched-horizon excursion-buffered hold (quote-sim).",
     minutes_help="Comma-separated checkpoint minutes (30..59).",
     has_abstentions=True,
 )
 _register_research_strategy(
     s10,
-    docstring="s10: majority-range-persistent current-bracket hold accuracy.",
+    docstring="s10: majority-range-persistent current-bracket hold (quote-sim).",
     minutes_help="Comma-separated checkpoint minutes (30..59).",
     has_abstentions=True,
 )
 _register_research_strategy(
     s11,
-    docstring="s11: matched-horizon path-replay current-bracket hold accuracy.",
+    docstring="s11: matched-horizon path-replay current-bracket hold (quote-sim).",
     minutes_help="Comma-separated checkpoint minutes (31..59).",
     has_abstentions=True,
 )
@@ -775,7 +937,7 @@ def research_s12(
         ),
     ] = None,
 ) -> None:
-    """s12: calibrated print-risk current-bracket hold accuracy."""
+    """s12: calibrated print-risk current-bracket hold (quote-sim)."""
     require_gate()
     minute_list = _research_common_options(db, start, end, minutes)
     connection = connect(db)
@@ -788,13 +950,15 @@ def research_s12(
             start=start,
             end=end,
         )
+        by_minute = score_trades_by_minute(connection, report.trades, minute_list)
     finally:
         connection.close()
     _print_research_tables(
         strategy=report.strategy,
         summary=f"{s12.STRATEGY_SUMMARY} · tau={report.tau}",
         side=report.side,
-        minutes=report.minutes,
+        by_minute=by_minute,
+        outcome_minutes=report.minutes,
         abstention_attr="abstained",
     )
 
@@ -843,7 +1007,7 @@ def research_s13(
         ),
     ] = None,
 ) -> None:
-    """s13: regime-pooled terminal-probability current-bracket hold accuracy."""
+    """s13: regime-pooled terminal-probability current-bracket hold (quote-sim)."""
     require_gate()
     minute_list = _research_common_options(db, start, end, minutes)
     connection = connect(db)
@@ -856,15 +1020,148 @@ def research_s13(
             start=start,
             end=end,
         )
+        by_minute = score_trades_by_minute(connection, report.trades, minute_list)
     finally:
         connection.close()
     _print_research_tables(
         strategy=report.strategy,
         summary=f"{s13.STRATEGY_SUMMARY} · p_star={report.p_star}",
         side=report.side,
-        minutes=report.minutes,
+        by_minute=by_minute,
+        outcome_minutes=report.minutes,
         abstention_attr="abstained",
     )
+
+
+def _print_all_research_table(summaries) -> None:
+    minutes = []
+    for item in summaries:
+        for minute, _pnl in item.by_minute:
+            if minute not in minutes:
+                minutes.append(minute)
+    if not minutes:
+        table = Table(title="research all")
+        table.add_column("strategy")
+        console.print(table)
+        return
+    for minute in minutes:
+        table = Table(title=f"research all · M{minute}")
+        table.add_column("strategy")
+        table.add_column("n", justify="right")
+        table.add_column("excl", justify="right")
+        table.add_column("premium", justify="right")
+        table.add_column("gross", justify="right")
+        table.add_column("return", justify="right")
+        table.add_column("win_rate", justify="right")
+        for item in summaries:
+            pnl = next(
+                (report for m, report in item.by_minute if m == minute),
+                None,
+            )
+            if pnl is None:
+                continue
+            table.add_row(
+                item.strategy,
+                str(pnl.quote_eligible),
+                str(pnl.quote_excluded),
+                f"{pnl.premium:.2f}",
+                f"{pnl.gross:.2f}",
+                _fmt_return(pnl),
+                _fmt_win_rate(pnl),
+            )
+        console.print(table)
+
+
+def _validate_minutes_for_all(minutes: tuple[int, ...]) -> None:
+    """s12 requires ≥40; shared --minutes for all strategies must clear that floor."""
+    for minute in minutes:
+        if not 40 <= minute <= 59:
+            console.print(
+                "[red]Error:[/red] for research all, "
+                "minutes must be in 40..59 (s12 floor)"
+            )
+            raise typer.Exit(code=2)
+
+
+@research_app.command("all")
+def research_all(
+    db: Annotated[
+        Path,
+        typer.Option(help="SQLite path."),
+    ] = DEFAULT_DB,
+    minutes: Annotated[
+        str,
+        typer.Option(help="Comma-separated checkpoint minutes (40..59)."),
+    ] = "50",
+    side: Annotated[
+        Side,
+        typer.Option(
+            help="Buy YES or NO on the selected bracket.",
+            parser=parse_side,
+            metavar="yes|no",
+        ),
+    ] = "yes",
+    tau: Annotated[
+        Decimal,
+        typer.Option(
+            help="s12 only: trade when escape probability ≤ 1-tau.",
+            parser=parse_tau,
+            metavar="0..1",
+        ),
+    ] = DEFAULT_TAU,
+    p_star: Annotated[
+        Decimal,
+        typer.Option(
+            "--p-star",
+            help="s13 only: trade when terminal p̂ ≥ p-star.",
+            parser=parse_tau,
+            metavar="0..1",
+        ),
+    ] = DEFAULT_P_STAR,
+    start: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC start of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC end of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+    workers: Annotated[
+        int | None,
+        typer.Option(help="Process pool size (default: min(13, CPUs))."),
+    ] = None,
+) -> None:
+    """Run s1–s13 quote-sim in parallel; one table per checkpoint minute."""
+    require_gate()
+    minute_list = _research_common_options(db, start, end, minutes)
+    _validate_minutes_for_all(minute_list)
+    if workers is not None and workers < 1:
+        console.print("[red]Error:[/red] --workers must be >= 1")
+        raise typer.Exit(code=2)
+    _print_research_banner()
+    try:
+        summaries = run_all_strategy_pnl(
+            db,
+            minutes=minute_list,
+            side=side,
+            start=start,
+            end=end,
+            tau=tau,
+            p_star=p_star,
+            workers=workers,
+        )
+    except Exception as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    _print_all_research_table(summaries)
 
 
 def main() -> None:

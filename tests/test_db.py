@@ -1,8 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Jason Scheffel <contact@jasonscheffel.com>
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import sqlite3
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +15,7 @@ from bob.db import (
     acknowledge_candle_hour_gap,
     candle_in_event_window,
     connect,
+    connect_readonly,
     event_tickers_in_close_range,
     existing_event_tickers,
     hour_has_complete_minutes,
@@ -82,6 +85,34 @@ def db():
     initialize_schema(connection)
     yield connection
     connection.close()
+
+
+def test_connect_readonly_handles_uri_sensitive_filename(tmp_path: Path) -> None:
+    db_path = tmp_path / "bob?v=1#frag.sqlite"
+    connection = connect(db_path)
+    initialize_schema(connection)
+    connection.execute(
+        "INSERT INTO events (event_ticker, close_ts, status, expiration_value) "
+        "VALUES (?, ?, ?, ?)",
+        ("KXBTC-99APR0100", int(CLOSE.timestamp()), STATUS_COMPLETE, "420"),
+    )
+    connection.commit()
+    connection.close()
+
+    readonly = connect_readonly(db_path)
+    try:
+        assert readonly.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert (
+            readonly.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+        )
+        with pytest.raises(sqlite3.OperationalError):
+            readonly.execute(
+                "INSERT INTO events (event_ticker, close_ts, status, expiration_value) "
+                "VALUES (?, ?, ?, ?)",
+                ("KXBTC-99APR0101", int(CLOSE.timestamp()), STATUS_NO_MARKETS, None),
+            )
+    finally:
+        readonly.close()
 
 
 def test_store_rejects_naive_close_ts(db) -> None:
@@ -268,23 +299,24 @@ def _seed_v1_schema(connection) -> None:
     connection.commit()
 
 
-def test_fresh_schema_is_v4(db) -> None:
+def test_fresh_schema_is_v5(db) -> None:
     assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-    assert SCHEMA_VERSION == 4
+    assert SCHEMA_VERSION == 5
     tables = {
         row[0]
         for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
     assert "btc_candles" in tables
     assert "candle_hour_gaps" in tables
+    assert "market_candles" in tables
 
 
-def test_migrate_v1_to_v4() -> None:
+def test_migrate_v1_to_v5() -> None:
     connection = connect(":memory:")
     _seed_v1_schema(connection)
 
     initialize_schema(connection)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
     assert connection.execute(
         "SELECT status, expiration_value FROM events WHERE event_ticker = ?",
         ("KXBTC-99APR0100",),
@@ -302,6 +334,12 @@ def test_migrate_v1_to_v4() -> None:
         ).fetchone()[0]
         == 1
     )
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'market_candles'"
+        ).fetchone()[0]
+        == 1
+    )
     connection.close()
 
 
@@ -310,16 +348,17 @@ def _seed_v2_schema(connection) -> None:
     # Downgrade marker after creating current schema, then rebuild as v2-only.
     connection.execute("DROP TABLE btc_candles")
     connection.execute("DROP TABLE candle_hour_gaps")
+    connection.execute("DROP TABLE market_candles")
     connection.execute("PRAGMA user_version = 2")
     connection.commit()
 
 
-def test_migrate_v2_to_v4() -> None:
+def test_migrate_v2_to_v5() -> None:
     connection = connect(":memory:")
     _seed_v2_schema(connection)
     assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
     initialize_schema(connection)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
     assert (
         connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE name = 'btc_candles'"
@@ -332,20 +371,50 @@ def test_migrate_v2_to_v4() -> None:
         ).fetchone()[0]
         == 1
     )
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'market_candles'"
+        ).fetchone()[0]
+        == 1
+    )
     connection.close()
 
 
-def test_migrate_v3_to_v4() -> None:
+def test_migrate_v3_to_v5() -> None:
     connection = connect(":memory:")
     initialize_schema(connection)
     connection.execute("DROP TABLE candle_hour_gaps")
+    connection.execute("DROP TABLE market_candles")
     connection.execute("PRAGMA user_version = 3")
     connection.commit()
     initialize_schema(connection)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
     assert (
         connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE name = 'candle_hour_gaps'"
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'market_candles'"
+        ).fetchone()[0]
+        == 1
+    )
+    connection.close()
+
+
+def test_migrate_v4_to_v5() -> None:
+    connection = connect(":memory:")
+    initialize_schema(connection)
+    connection.execute("DROP TABLE market_candles")
+    connection.execute("PRAGMA user_version = 4")
+    connection.commit()
+    initialize_schema(connection)
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'market_candles'"
         ).fetchone()[0]
         == 1
     )

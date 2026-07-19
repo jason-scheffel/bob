@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -44,6 +44,8 @@ _INITIAL_429_DELAY_S = 0.5
 _MAX_429_DELAY_S = 30.0
 # CF passthrough costs 50 read tokens/req (~4 rps on Basic). Combined backfill default.
 DEFAULT_MAX_RPS = 3.0
+# Market candlesticks are ordinary public GETs (not CF). Separate budget.
+DEFAULT_MARKET_CANDLE_RPS = 20.0
 
 STATUS_COMPLETE = "complete"
 STATUS_MISSING_EXPIRATION = "missing_expiration_value"
@@ -113,7 +115,8 @@ class RateLimiter:
     """Space out requests to stay under a sustained requests-per-second budget.
 
     ``max_rps <= 0`` disables limiting. On 429, the effective rate is halved
-    (floor 1/s) until successes climb it back toward ``max_rps``.
+    (floor ``min(1/s, max_rps)``) until successes climb it back toward
+    ``max_rps``.
     """
 
     def __init__(
@@ -146,7 +149,8 @@ class RateLimiter:
     def note_429(self) -> None:
         if self._max_rps <= 0:
             return
-        self._rps = max(1.0, self._rps / 2.0)
+        floor = min(1.0, self._max_rps)
+        self._rps = max(floor, self._rps / 2.0)
 
     def note_success(self) -> None:
         if self._max_rps <= 0 or self._rps >= self._max_rps:
@@ -580,6 +584,78 @@ class KalshiClient:
         payload = self._get_json("/historical/cutoff")
         return _parse_utc(payload["market_settled_ts"])
 
+    def market_settled_cutoff(self) -> datetime:
+        """Public wrapper for ``GET /historical/cutoff`` → ``market_settled_ts``."""
+        return self._market_settled_cutoff()
+
+    def fetch_market_quote_candles(
+        self,
+        ticker: str,
+        *,
+        start_ts: int,
+        end_ts: int,
+        close_ts: int,
+        cutoff: datetime | None = None,
+    ):
+        """Fetch 1m YES bid/ask closes for one ticker; route live vs historical.
+
+        ``start_ts``/``end_ts`` are inclusive candle-end bounds. Primary route
+        uses ``market_settled_ts`` vs event ``close_ts``; on 404 the other
+        endpoint is tried once (boundary fallback).
+        """
+        from bob.db import MarketQuoteBar
+
+        if start_ts > end_ts:
+            raise ValueError("start_ts must be <= end_ts")
+        settled_cutoff = cutoff if cutoff is not None else self._market_settled_cutoff()
+        if close_ts < int(settled_cutoff.timestamp()):
+            ordered = ("historical", "live")
+        else:
+            ordered = ("live", "historical")
+        for kind in ordered:
+            if kind == "historical":
+                path = f"/historical/markets/{ticker}/candlesticks"
+            else:
+                path = f"/series/{SERIES_TICKER}/markets/{ticker}/candlesticks"
+            payload = self._get_json(
+                path,
+                params={
+                    "start_ts": str(start_ts),
+                    "end_ts": str(end_ts),
+                    "period_interval": "1",
+                },
+                not_found_ok=True,
+            )
+            if payload is None:
+                continue
+            if not isinstance(payload, Mapping):
+                raise KalshiParseError(
+                    f"market candlesticks payload is not an object for {ticker!r}"
+                )
+            response_ticker = payload.get("ticker")
+            if response_ticker is not None and response_ticker != ticker:
+                raise KalshiParseError(
+                    f"candlesticks ticker mismatch: wanted {ticker!r}, "
+                    f"got {response_ticker!r}"
+                )
+            sticks = payload.get("candlesticks")
+            if not isinstance(sticks, list):
+                raise KalshiParseError(
+                    f"market candlesticks missing list for {ticker!r}"
+                )
+            bars: list[MarketQuoteBar] = []
+            for row in sticks:
+                if not isinstance(row, Mapping):
+                    raise KalshiParseError(
+                        f"candlestick is not an object for {ticker!r}: {row!r}"
+                    )
+                bar = parse_market_candlestick(ticker, row)
+                if start_ts <= bar.end_ts <= end_ts:
+                    bars.append(bar)
+            return tuple(bars)
+        # Both endpoints 404 → empty hour (caller pads nulls).
+        return ()
+
     def _iter_markets(
         self,
         path: str,
@@ -674,6 +750,7 @@ class KalshiClient:
         *,
         params: Mapping[str, str] | None = None,
         sign: bool = False,
+        not_found_ok: bool = False,
     ) -> Any:
         delay = _INITIAL_429_DELAY_S
         for attempt in range(_MAX_429_ATTEMPTS):
@@ -708,6 +785,9 @@ class KalshiClient:
                 raise KalshiAuthError(
                     "Kalshi request forbidden (403)"
                 )
+            if response.status_code == 404 and not_found_ok:
+                self._limiter.note_success()
+                return None
             if response.status_code == 503:
                 if sign:
                     raise KalshiAuthError(
@@ -939,6 +1019,49 @@ def _cf_sample_rows(payload: Any) -> Sequence[Any]:
     if isinstance(payload, list):
         return payload
     raise KalshiParseError(f"unexpected CF response shape: {type(payload)!r}")
+
+
+def _quote_close_dollars(distribution: Any, *, field: str) -> str:
+    """Extract a required fixed-point dollar close from bid/ask OHLC."""
+    if distribution is None:
+        raise KalshiParseError(f"missing {field} distribution")
+    if not isinstance(distribution, Mapping):
+        raise KalshiParseError(f"{field} is not an object: {distribution!r}")
+    # Live uses *_dollars; historical uses bare open/high/low/close.
+    raw = distribution.get("close_dollars")
+    if raw is None:
+        raw = distribution.get("close")
+    if raw is None:
+        raise KalshiParseError(f"missing {field} close")
+    text = str(raw).strip()
+    if not text:
+        raise KalshiParseError(f"empty {field} close")
+    try:
+        amount = Decimal(text)
+    except InvalidOperation as exc:
+        raise KalshiParseError(f"invalid {field} close: {raw!r}") from exc
+    if not amount.is_finite():
+        raise KalshiParseError(f"non-finite {field} close: {raw!r}")
+    return format(amount, "f")
+
+
+def parse_market_candlestick(ticker: str, row: Mapping[str, Any]):
+    """Normalize live or historical market candlestick → ``MarketQuoteBar``."""
+    from bob.db import MarketQuoteBar
+
+    end_raw = row.get("end_period_ts")
+    if end_raw is None:
+        raise KalshiParseError(f"candlestick missing end_period_ts: {row!r}")
+    try:
+        end_ts = int(end_raw)
+    except (TypeError, ValueError) as exc:
+        raise KalshiParseError(f"bad end_period_ts: {end_raw!r}") from exc
+    return MarketQuoteBar(
+        ticker=ticker,
+        end_ts=end_ts,
+        yes_bid_close=_quote_close_dollars(row.get("yes_bid"), field="yes_bid"),
+        yes_ask_close=_quote_close_dollars(row.get("yes_ask"), field="yes_ask"),
+    )
 
 
 def aggregate_samples_to_minute_bars(

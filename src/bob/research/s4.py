@@ -28,6 +28,7 @@ from bob.research.common import (
     load_candle_ohlc,
     load_minute_closes,
 )
+from bob.research.trades import TradeObservation
 
 STRATEGY = "s4"
 STRATEGY_SUMMARY = "half-reversion to hourly open"
@@ -76,6 +77,7 @@ class Report:
     strategy: str
     side: Side
     minutes: tuple[MinuteStats, ...]
+    trades: tuple[TradeObservation, ...]
 
 
 def _outcome_win(*, selected_won: bool, side: Side) -> bool:
@@ -123,6 +125,7 @@ def evaluate(
     losses = Counter({minute: 0 for minute in minute_list})
     exclusions: dict[int, Counter[str]] = {minute: Counter() for minute in minute_list}
     abstentions: dict[int, Counter[str]] = {minute: Counter() for minute in minute_list}
+    trades: list[TradeObservation] = []
 
     for event in events:
         brackets = load_brackets(connection, event.event_ticker)
@@ -160,10 +163,22 @@ def evaluate(
                 exclusions[minute][reason] += 1
                 continue
             selected = matches[0]
-            if _outcome_win(selected_won=selected.won, side=side):
+            end_ts = checkpoint_end_ts(event.close_ts, minute)
+            won = _outcome_win(selected_won=selected.won, side=side)
+            if won:
                 wins[minute] += 1
             else:
                 losses[minute] += 1
+            trades.append(
+                TradeObservation(
+                    event_ticker=event.event_ticker,
+                    market_ticker=selected.ticker,
+                    minute=minute,
+                    end_ts=end_ts,
+                    side=side,
+                    won=won,
+                )
+            )
 
     return Report(
         strategy=STRATEGY,
@@ -179,4 +194,5 @@ def evaluate(
             )
             for minute in minute_list
         ),
+        trades=tuple(trades),
     )

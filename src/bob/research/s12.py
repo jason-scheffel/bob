@@ -23,10 +23,12 @@ from typing import Literal
 from bob.browse import load_brackets, load_events, winning_bracket
 from bob.research.common import (
     brackets_containing,
+    checkpoint_end_ts,
     finite_decimal,
     load_all_complete_events,
     load_minute_closes,
 )
+from bob.research.trades import TradeObservation
 
 STRATEGY = "s12"
 STRATEGY_SUMMARY = "calibrated print-risk current bracket"
@@ -79,6 +81,7 @@ class Report:
     side: Side
     tau: Decimal
     minutes: tuple[MinuteStats, ...]
+    trades: tuple[TradeObservation, ...]
 
 
 def print_escape_probability(
@@ -163,6 +166,7 @@ def evaluate(
     losses = Counter({minute: 0 for minute in minute_list})
     exclusions: dict[int, Counter[str]] = {minute: Counter() for minute in minute_list}
     abstentions: dict[int, Counter[str]] = {minute: Counter() for minute in minute_list}
+    trades: list[TradeObservation] = []
     max_escape = 1 - tau
 
     for event in events:
@@ -213,10 +217,22 @@ def evaluate(
                 abstentions[minute]["print_risk_high"] += 1
                 continue
 
-            if _outcome_win(selected_won=selected.won, side=side):
+            end_ts = checkpoint_end_ts(event.close_ts, minute)
+            won = _outcome_win(selected_won=selected.won, side=side)
+            if won:
                 wins[minute] += 1
             else:
                 losses[minute] += 1
+            trades.append(
+                TradeObservation(
+                    event_ticker=event.event_ticker,
+                    market_ticker=selected.ticker,
+                    minute=minute,
+                    end_ts=end_ts,
+                    side=side,
+                    won=won,
+                )
+            )
 
     return Report(
         strategy=STRATEGY,
@@ -233,4 +249,5 @@ def evaluate(
             )
             for minute in minute_list
         ),
+        trades=tuple(trades),
     )

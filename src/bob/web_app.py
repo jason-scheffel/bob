@@ -138,12 +138,15 @@ def _coverage_tab(report: CoverageReport) -> None:
     else:
         _show_days(selected)
     st.caption(
-        "Cell: events then candles (e.g. 20✓ 4· / 22c 1g). "
+        "Cell: events / BRTI candles / market quotes "
+        "(e.g. 20✓ 4· / 22c 1g / 18q/24). "
         "✓ complete event, · flagged event, "
         "c = hours with all 60 BRTI minutes, "
-        "g = acknowledged upstream candle gap. "
-        "Green = events and candles both accounted, "
-        "yellow = partial, red = empty"
+        "g = acknowledged upstream candle gap, "
+        "q = event-hours where every bracket has all 60 YES bid/ask slots "
+        "(null placeholders count; q/N when incomplete). "
+        "Green = events, BRTI candles, and market quotes all accounted, "
+        "yellow = partial (including missing quotes), red = empty"
         + (", gray = outside DB span" if level == "Days" else "")
         + "."
     )
@@ -164,6 +167,7 @@ def _show_months(report: CoverageReport) -> None:
                 "flagged": month.flagged_events,
                 "events": (f"{month.covered_events}/{month.expected_events}"),
                 "candles": month.candles_cell(),
+                "quotes": month.quotes_cell(),
                 "coverage": format_coverage_percent(
                     month.overall_fraction,
                     complete=month.status == "full",

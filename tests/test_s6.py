@@ -42,3 +42,7 @@ def test_s6_breakout_to_neighbor(db) -> None:
     report = evaluate(db, minutes=(55,), side="yes")
     assert report.minutes[0].eligible == 1
     assert report.minutes[0].wins == 1
+    assert len(report.trades) == 1
+    assert report.trades[0].market_ticker.endswith("-B")
+    assert report.trades[0].end_ts == checkpoint_end_ts(RESEARCH_CLOSE, 55)
+    assert report.trades[0].won is True
