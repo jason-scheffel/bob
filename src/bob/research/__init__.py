@@ -3,6 +3,6 @@
 
 """Named offline research strategies (`bob research <name>`).
 
-Each strategy is its own module (``s1``…``s11``). Prefer adding a new
+Each strategy is its own module (``s1``…``s12``). Prefer adding a new
 module over editing an existing strategy.
 """

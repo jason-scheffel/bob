@@ -1,0 +1,236 @@
+# SPDX-FileCopyrightText: 2026 Jason Scheffel <contact@jasonscheffel.com>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+"""s12: calibrated print-risk current-bracket hold.
+
+Estimate the probability that a matched-horizon close-to-close hop
+escapes the current closed bracket from within-hour hop samples; buy
+YES/NO only when that estimated escape probability is at most ``1 - tau``.
+
+Treat this module as frozen. Prefer a new strategy module over editing s12.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
+from typing import Literal
+
+from bob.browse import load_brackets, load_events, winning_bracket
+from bob.research.common import (
+    brackets_containing,
+    finite_decimal,
+    load_all_complete_events,
+    load_minute_closes,
+)
+
+STRATEGY = "s12"
+STRATEGY_SUMMARY = "calibrated print-risk current bracket"
+
+DEFAULT_CHECKPOINT_MINUTES = (45, 50, 55)
+MIN_CHECKPOINT = 40
+DEFAULT_TAU = Decimal("0.75")
+
+Side = Literal["yes", "no"]
+
+ExclusionReason = Literal[
+    "missing_bars",
+    "bad_price",
+    "no_bracket_match",
+    "ambiguous_bracket",
+    "bad_winner_invariant",
+    "bad_expiration",
+    "no_winner",
+]
+
+AbstentionReason = Literal[
+    "open_ended_bracket",
+    "print_risk_high",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class MinuteStats:
+    minute: int
+    eligible: int
+    wins: int
+    losses: int
+    abstentions: dict[str, int]
+    exclusions: dict[str, int]
+
+    @property
+    def win_rate(self) -> float | None:
+        if self.eligible == 0:
+            return None
+        return self.wins / self.eligible
+
+    @property
+    def abstained(self) -> int:
+        return sum(self.abstentions.values())
+
+
+@dataclass(frozen=True, slots=True)
+class Report:
+    strategy: str
+    side: Side
+    tau: Decimal
+    minutes: tuple[MinuteStats, ...]
+
+
+def print_escape_probability(
+    closes: Sequence[Decimal],
+    *,
+    checkpoint: int,
+    floor: Decimal,
+    cap: Decimal,
+) -> Decimal:
+    """Estimated print-escape probability from matched-horizon hops.
+
+    ``closes`` must be closes for minutes ``1..checkpoint`` in order.
+    """
+    if len(closes) != checkpoint:
+        raise ValueError(
+            f"closes length must equal checkpoint ({checkpoint}), got {len(closes)}"
+        )
+    remaining = 60 - checkpoint
+    price = closes[-1]
+    hops = [
+        abs(closes[index] - closes[index - remaining])
+        for index in range(remaining, checkpoint)
+    ]
+    if not hops:
+        raise ValueError("no hop samples")
+    below = price - floor
+    above = cap - price
+    sample_count = Decimal(len(hops))
+    survival_below = Decimal(sum(1 for hop in hops if hop > below)) / sample_count
+    survival_above = Decimal(sum(1 for hop in hops if hop > above)) / sample_count
+    return (survival_below + survival_above) / 2
+
+
+def _outcome_win(*, selected_won: bool, side: Side) -> bool:
+    return selected_won if side == "yes" else not selected_won
+
+
+def _classify(count: int) -> ExclusionReason | None:
+    if count == 1:
+        return None
+    if count == 0:
+        return "no_bracket_match"
+    return "ambiguous_bracket"
+
+
+def evaluate(
+    connection: sqlite3.Connection,
+    *,
+    minutes: Sequence[int] = DEFAULT_CHECKPOINT_MINUTES,
+    side: Side = "yes",
+    tau: Decimal = DEFAULT_TAU,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> Report:
+    """Score calibrated print-risk hold accuracy."""
+    if side not in ("yes", "no"):
+        raise ValueError(f"side must be 'yes' or 'no', got {side!r}")
+    if not isinstance(tau, Decimal):
+        tau = Decimal(str(tau))
+    if not tau.is_finite() or not (Decimal("0") < tau < Decimal("1")):
+        raise ValueError(f"tau must be in (0, 1), got {tau}")
+    minute_list = tuple(minutes)
+    if not minute_list:
+        raise ValueError("minutes must be non-empty")
+    if len(set(minute_list)) != len(minute_list):
+        raise ValueError("minutes must be unique")
+    for minute in minute_list:
+        if not MIN_CHECKPOINT <= minute <= 59:
+            raise ValueError(f"minute must be in {MIN_CHECKPOINT}..59, got {minute}")
+    if (start is None) ^ (end is None):
+        raise ValueError("start and end must both be set or both omitted")
+    if start is not None and end is not None and start >= end:
+        raise ValueError("start must be earlier than end")
+
+    events = (
+        load_all_complete_events(connection)
+        if start is None
+        else load_events(connection, start, end)
+    )
+
+    wins = Counter({minute: 0 for minute in minute_list})
+    losses = Counter({minute: 0 for minute in minute_list})
+    exclusions: dict[int, Counter[str]] = {minute: Counter() for minute in minute_list}
+    abstentions: dict[int, Counter[str]] = {minute: Counter() for minute in minute_list}
+    max_escape = 1 - tau
+
+    for event in events:
+        brackets = load_brackets(connection, event.event_ticker)
+        winner = winning_bracket(brackets)
+        expiration = finite_decimal(event.expiration_value)
+        for minute in minute_list:
+            if winner is None:
+                exclusions[minute]["no_winner"] += 1
+                continue
+            if expiration is None:
+                exclusions[minute]["bad_expiration"] += 1
+                continue
+            settlement = brackets_containing(expiration, brackets)
+            if len(settlement) != 1 or settlement[0] != winner:
+                exclusions[minute]["bad_winner_invariant"] += 1
+                continue
+
+            closes = load_minute_closes(
+                connection, event.close_ts, range(1, minute + 1)
+            )
+            if closes is None:
+                exclusions[minute]["missing_bars"] += 1
+                continue
+            price = closes[-1]
+            matches = brackets_containing(price, brackets)
+            reason = _classify(len(matches))
+            if reason is not None:
+                exclusions[minute][reason] += 1
+                continue
+            selected = matches[0]
+            if selected.floor_strike is None or selected.cap_strike is None:
+                abstentions[minute]["open_ended_bracket"] += 1
+                continue
+            floor = finite_decimal(selected.floor_strike)
+            cap = finite_decimal(selected.cap_strike)
+            if floor is None or cap is None:
+                exclusions[minute]["bad_price"] += 1
+                continue
+
+            escape = print_escape_probability(
+                closes,
+                checkpoint=minute,
+                floor=floor,
+                cap=cap,
+            )
+            if escape > max_escape:
+                abstentions[minute]["print_risk_high"] += 1
+                continue
+
+            if _outcome_win(selected_won=selected.won, side=side):
+                wins[minute] += 1
+            else:
+                losses[minute] += 1
+
+    return Report(
+        strategy=STRATEGY,
+        side=side,
+        tau=tau,
+        minutes=tuple(
+            MinuteStats(
+                minute=minute,
+                eligible=wins[minute] + losses[minute],
+                wins=wins[minute],
+                losses=losses[minute],
+                abstentions=dict(abstentions[minute]),
+                exclusions=dict(exclusions[minute]),
+            )
+            for minute in minute_list
+        ),
+    )

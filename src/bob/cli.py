@@ -7,6 +7,7 @@ import sys
 import time
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated
 
@@ -46,8 +47,9 @@ from bob.kalshi import (
     load_dotenv,
     require_kalshi_credentials,
 )
-from bob.research import s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11
+from bob.research import s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12
 from bob.research.s1 import Side
+from bob.research.s12 import DEFAULT_TAU
 
 DEFAULT_DB = Path("data/bob.sqlite")
 
@@ -58,7 +60,7 @@ app = typer.Typer(
 research_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
-    help="Offline outcome-accuracy studies (named strategies: s1–s11).",
+    help="Offline outcome-accuracy studies (named strategies: s1–s12).",
 )
 app.add_typer(research_app, name="research")
 console = Console(stderr=True)
@@ -485,6 +487,16 @@ def parse_checkpoint_minutes(value: str) -> tuple[int, ...]:
     return tuple(minutes)
 
 
+def parse_tau(value: str) -> Decimal:
+    try:
+        tau = Decimal(value)
+    except InvalidOperation as exc:
+        raise typer.BadParameter("tau must be a decimal in (0, 1)") from exc
+    if not tau.is_finite() or not (Decimal("0") < tau < Decimal("1")):
+        raise typer.BadParameter("tau must be a decimal in (0, 1)")
+    return tau
+
+
 def parse_side(value: str) -> Side:
     normalized = value.strip().lower()
     if normalized == "yes":
@@ -717,6 +729,73 @@ _register_research_strategy(
     minutes_help="Comma-separated checkpoint minutes (31..59).",
     has_abstentions=True,
 )
+
+
+@research_app.command("s12")
+def research_s12(
+    db: Annotated[
+        Path,
+        typer.Option(help="SQLite path."),
+    ] = DEFAULT_DB,
+    minutes: Annotated[
+        str,
+        typer.Option(help="Comma-separated checkpoint minutes (40..59)."),
+    ] = ",".join(str(minute) for minute in s12.DEFAULT_CHECKPOINT_MINUTES),
+    side: Annotated[
+        Side,
+        typer.Option(
+            help="Buy YES or NO on the selected bracket.",
+            parser=parse_side,
+            metavar="yes|no",
+        ),
+    ] = "yes",
+    tau: Annotated[
+        Decimal,
+        typer.Option(
+            help="Trade when estimated print-escape probability ≤ 1-tau.",
+            parser=parse_tau,
+            metavar="0..1",
+        ),
+    ] = DEFAULT_TAU,
+    start: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC start of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC end of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+) -> None:
+    """s12: calibrated print-risk current-bracket hold accuracy."""
+    require_gate()
+    minute_list = _research_common_options(db, start, end, minutes)
+    connection = connect(db)
+    try:
+        report = s12.evaluate(
+            connection,
+            minutes=minute_list,
+            side=side,
+            tau=tau,
+            start=start,
+            end=end,
+        )
+    finally:
+        connection.close()
+    _print_research_tables(
+        strategy=report.strategy,
+        summary=f"{s12.STRATEGY_SUMMARY} · tau={report.tau}",
+        side=report.side,
+        minutes=report.minutes,
+        abstention_attr="abstained",
+    )
 
 
 def main() -> None:
