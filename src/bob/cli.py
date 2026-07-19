@@ -47,11 +47,17 @@ from bob.kalshi import (
     require_kalshi_credentials,
 )
 from bob.research.s1 import (
-    DEFAULT_CHECKPOINT_MINUTES,
-    STRATEGY,
-    STRATEGY_SUMMARY,
+    DEFAULT_CHECKPOINT_MINUTES as S1_DEFAULT_MINUTES,
+    STRATEGY as S1_STRATEGY,
+    STRATEGY_SUMMARY as S1_SUMMARY,
     Side,
     evaluate as evaluate_s1,
+)
+from bob.research.s2 import (
+    DEFAULT_CHECKPOINT_MINUTES as S2_DEFAULT_MINUTES,
+    STRATEGY as S2_STRATEGY,
+    STRATEGY_SUMMARY as S2_SUMMARY,
+    evaluate as evaluate_s2,
 )
 
 DEFAULT_DB = Path("data/bob.sqlite")
@@ -63,7 +69,7 @@ app = typer.Typer(
 research_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
-    help="Offline outcome-accuracy studies (named strategies: s1, …).",
+    help="Offline outcome-accuracy studies (named strategies: s1, s2, …).",
 )
 app.add_typer(research_app, name="research")
 console = Console(stderr=True)
@@ -499,7 +505,92 @@ def parse_side(value: str) -> Side:
     raise typer.BadParameter("side must be 'yes' or 'no'")
 
 
-@research_app.command(STRATEGY)
+def _print_research_tables(
+    *,
+    strategy: str,
+    summary: str,
+    side: Side,
+    minutes,
+    abstention_attr: str | None = None,
+) -> None:
+    table = Table(title=(f"{strategy} · {summary} · side={side} · outcome accuracy"))
+    table.add_column("minute", justify="right")
+    table.add_column("eligible", justify="right")
+    table.add_column("wins", justify="right")
+    table.add_column("losses", justify="right")
+    table.add_column("win_rate", justify="right")
+    if abstention_attr is not None:
+        table.add_column("abstained", justify="right")
+    for stats in minutes:
+        rate = "—" if stats.win_rate is None else f"{stats.win_rate * 100:.1f}%"
+        row = [
+            str(stats.minute),
+            str(stats.eligible),
+            str(stats.wins),
+            str(stats.losses),
+            rate,
+        ]
+        if abstention_attr is not None:
+            row.append(str(getattr(stats, abstention_attr)))
+        table.add_row(*row)
+    console.print(table)
+
+    exclusion_keys = sorted(
+        {reason for stats in minutes for reason in stats.exclusions}
+    )
+    if exclusion_keys:
+        excl = Table(title="Exclusions")
+        excl.add_column("minute", justify="right")
+        for key in exclusion_keys:
+            excl.add_column(key, justify="right")
+        for stats in minutes:
+            excl.add_row(
+                str(stats.minute),
+                *(str(stats.exclusions.get(key, 0)) for key in exclusion_keys),
+            )
+        console.print(excl)
+
+    if abstention_attr is None:
+        return
+    abstention_keys = sorted(
+        {reason for stats in minutes for reason in stats.abstentions}
+    )
+    if abstention_keys:
+        abst = Table(title="Abstentions")
+        abst.add_column("minute", justify="right")
+        for key in abstention_keys:
+            abst.add_column(key, justify="right")
+        for stats in minutes:
+            abst.add_row(
+                str(stats.minute),
+                *(str(stats.abstentions.get(key, 0)) for key in abstention_keys),
+            )
+        console.print(abst)
+
+
+def _research_common_options(
+    db: Path,
+    start: datetime | None,
+    end: datetime | None,
+    minutes: str,
+) -> tuple[int, ...]:
+    if not db.is_file():
+        console.print(f"[red]Error:[/red] database not found: {db}")
+        raise typer.Exit(code=2)
+    if (start is None) ^ (end is None):
+        console.print("[red]Error:[/red] provide both --start and --end, or neither")
+        raise typer.Exit(code=2)
+    if start is not None and end is not None and start >= end:
+        console.print("[red]Error:[/red] --start must be earlier than --end")
+        raise typer.Exit(code=2)
+    try:
+        return parse_checkpoint_minutes(minutes)
+    except typer.BadParameter as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+
+@research_app.command(S1_STRATEGY)
 def research_s1(
     db: Annotated[
         Path,
@@ -510,7 +601,7 @@ def research_s1(
         typer.Option(
             help="Comma-separated minutes into the hour (1..59).",
         ),
-    ] = ",".join(str(m) for m in DEFAULT_CHECKPOINT_MINUTES),
+    ] = ",".join(str(m) for m in S1_DEFAULT_MINUTES),
     side: Annotated[
         Side,
         typer.Option(
@@ -538,21 +629,7 @@ def research_s1(
 ) -> None:
     """s1: current-bracket hold-to-settlement outcome accuracy."""
     require_gate()
-    if not db.is_file():
-        console.print(f"[red]Error:[/red] database not found: {db}")
-        raise typer.Exit(code=2)
-    if (start is None) ^ (end is None):
-        console.print("[red]Error:[/red] provide both --start and --end, or neither")
-        raise typer.Exit(code=2)
-    if start is not None and end is not None and start >= end:
-        console.print("[red]Error:[/red] --start must be earlier than --end")
-        raise typer.Exit(code=2)
-    try:
-        minute_list = parse_checkpoint_minutes(minutes)
-    except typer.BadParameter as exc:
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(code=2) from exc
-
+    minute_list = _research_common_options(db, start, end, minutes)
     connection = connect(db)
     try:
         report = evaluate_s1(
@@ -564,43 +641,76 @@ def research_s1(
         )
     finally:
         connection.close()
-
-    table = Table(
-        title=(
-            f"{report.strategy} · {STRATEGY_SUMMARY} · "
-            f"side={report.side} · outcome accuracy"
-        )
+    _print_research_tables(
+        strategy=report.strategy,
+        summary=S1_SUMMARY,
+        side=report.side,
+        minutes=report.minutes,
     )
-    table.add_column("minute", justify="right")
-    table.add_column("eligible", justify="right")
-    table.add_column("wins", justify="right")
-    table.add_column("losses", justify="right")
-    table.add_column("win_rate", justify="right")
-    for stats in report.minutes:
-        rate = "—" if stats.win_rate is None else f"{stats.win_rate * 100:.1f}%"
-        table.add_row(
-            str(stats.minute),
-            str(stats.eligible),
-            str(stats.wins),
-            str(stats.losses),
-            rate,
-        )
-    console.print(table)
 
-    exclusion_keys = sorted(
-        {reason for stats in report.minutes for reason in stats.exclusions}
+
+@research_app.command(S2_STRATEGY)
+def research_s2(
+    db: Annotated[
+        Path,
+        typer.Option(help="SQLite path."),
+    ] = DEFAULT_DB,
+    minutes: Annotated[
+        str,
+        typer.Option(
+            help=(
+                "Comma-separated checkpoint minutes "
+                f"({S2_DEFAULT_MINUTES[0]}..59); uses prior "
+                "4 minutes for stability."
+            ),
+        ),
+    ] = ",".join(str(m) for m in S2_DEFAULT_MINUTES),
+    side: Annotated[
+        Side,
+        typer.Option(
+            help="Buy YES or NO on the current bracket when not abstaining.",
+            parser=parse_side,
+            metavar="yes|no",
+        ),
+    ] = "yes",
+    start: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC start of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC end of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+) -> None:
+    """s2: stable-center current-bracket hold-to-settlement accuracy."""
+    require_gate()
+    minute_list = _research_common_options(db, start, end, minutes)
+    connection = connect(db)
+    try:
+        report = evaluate_s2(
+            connection,
+            minutes=minute_list,
+            side=side,
+            start=start,
+            end=end,
+        )
+    finally:
+        connection.close()
+    _print_research_tables(
+        strategy=report.strategy,
+        summary=S2_SUMMARY,
+        side=report.side,
+        minutes=report.minutes,
+        abstention_attr="abstained",
     )
-    if exclusion_keys:
-        excl = Table(title="Exclusions")
-        excl.add_column("minute", justify="right")
-        for key in exclusion_keys:
-            excl.add_column(key, justify="right")
-        for stats in report.minutes:
-            excl.add_row(
-                str(stats.minute),
-                *(str(stats.exclusions.get(key, 0)) for key in exclusion_keys),
-            )
-        console.print(excl)
 
 
 def main() -> None:

@@ -7,11 +7,21 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from bob.browse import BracketRow, EventRow
 from bob.kalshi import STATUS_COMPLETE
+
+
+@dataclass(frozen=True, slots=True)
+class CandleOHLC:
+    end_ts: int
+    open: str
+    high: str
+    low: str
+    close: str
 
 
 def finite_decimal(value: str) -> Decimal | None:
@@ -89,13 +99,34 @@ def load_candle_close(
     connection: sqlite3.Connection,
     end_ts: int,
 ) -> str | None:
+    bar = load_candle_ohlc(connection, end_ts)
+    if bar is None:
+        return None
+    return bar.close
+
+
+def load_candle_ohlc(
+    connection: sqlite3.Connection,
+    end_ts: int,
+) -> CandleOHLC | None:
     row = connection.execute(
-        "SELECT close FROM btc_candles WHERE end_ts = ?",
+        """
+        SELECT end_ts, open, high, low, close
+        FROM btc_candles
+        WHERE end_ts = ?
+        """,
         (end_ts,),
     ).fetchone()
     if row is None:
         return None
-    return row[0]
+    end_ts_v, open_v, high_v, low_v, close_v = row
+    return CandleOHLC(
+        end_ts=int(end_ts_v),
+        open=open_v,
+        high=high_v,
+        low=low_v,
+        close=close_v,
+    )
 
 
 def load_all_complete_events(
