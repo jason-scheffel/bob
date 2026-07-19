@@ -9,9 +9,15 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from bob.cli import app, parse_iso_datetime, run_backfill
+from bob.cli import (
+    app,
+    format_eta,
+    iter_utc_day_chunks,
+    parse_iso_datetime,
+    run_backfill,
+)
 from bob.db import connect, initialize_schema
-from bob.kalshi import BASE_URL, KalshiClient
+from bob.kalshi import BASE_URL, DEFAULT_MAX_RPS, KalshiClient
 
 runner = CliRunner()
 
@@ -22,6 +28,36 @@ def test_parse_iso_datetime_requires_timezone() -> None:
     )
     with pytest.raises(typer.BadParameter, match="timezone"):
         parse_iso_datetime("2099-04-01T00:00:00")
+
+
+def test_default_max_rps_is_five() -> None:
+    assert DEFAULT_MAX_RPS == 5.0
+
+
+def test_format_eta() -> None:
+    assert format_eta(45) == "45s"
+    assert format_eta(90) == "1m30s"
+    assert format_eta(3661) == "1h01m"
+
+
+def test_iter_utc_day_chunks() -> None:
+    start = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 3, 12, tzinfo=timezone.utc)
+    chunks = list(iter_utc_day_chunks(start, end))
+    assert chunks == [
+        (
+            datetime(2026, 6, 1, tzinfo=timezone.utc),
+            datetime(2026, 6, 2, tzinfo=timezone.utc),
+        ),
+        (
+            datetime(2026, 6, 2, tzinfo=timezone.utc),
+            datetime(2026, 6, 3, tzinfo=timezone.utc),
+        ),
+        (
+            datetime(2026, 6, 3, tzinfo=timezone.utc),
+            datetime(2026, 6, 3, 12, tzinfo=timezone.utc),
+        ),
+    ]
 
 
 def test_run_backfill_half_open(tmp_path: Path) -> None:
@@ -90,7 +126,7 @@ def test_run_backfill_half_open(tmp_path: Path) -> None:
     with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
         counts = run_backfill(
             connection,
-            KalshiClient(http),
+            KalshiClient(http, max_rps=0),
             datetime(2099, 4, 1, tzinfo=timezone.utc),
             datetime(2099, 4, 2, tzinfo=timezone.utc),
         )
@@ -186,4 +222,7 @@ def test_cli_backfill_mocked(
         ],
     )
     assert result.exit_code == 0
+    assert "[1/1] 2099-04-01" in result.output
     assert "stored 1 events, 2 brackets" in result.output
+    assert "ETA 0s" in result.output
+    assert "done  1 events, 2 brackets" in result.output

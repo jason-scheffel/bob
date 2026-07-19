@@ -32,6 +32,8 @@ _MONTH_ABBR = (
 _MAX_429_ATTEMPTS = 8
 _INITIAL_429_DELAY_S = 0.5
 _MAX_429_DELAY_S = 30.0
+# Basic Read is 200 tokens/s at ~10 tokens/GET ≈ 20 req/s. Default stays well under.
+DEFAULT_MAX_RPS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +62,64 @@ class KalshiParseError(ValueError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class FetchUpdate:
+    """Progress snapshot while fetching settled markets."""
+
+    phase: str
+    detail: str
+    requests: int = 0
+    markets: int = 0
+    retries_429: int = 0
+    completed: int | None = None
+    total: int | None = None
+
+
+class RateLimiter:
+    """Space out requests to stay under a sustained requests-per-second budget.
+
+    ``max_rps <= 0`` disables limiting. On 429, the effective rate is halved
+    (floor 1/s) until successes climb it back toward ``max_rps``.
+    """
+
+    def __init__(
+        self,
+        max_rps: float,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._max_rps = max_rps
+        self._rps = max_rps
+        self._sleep = sleep
+        self._monotonic = monotonic
+        self._next_at = 0.0
+
+    @property
+    def rps(self) -> float:
+        return self._rps
+
+    def wait(self) -> None:
+        if self._rps <= 0:
+            return
+        now = self._monotonic()
+        delay = self._next_at - now
+        if delay > 0:
+            self._sleep(delay)
+            now = self._monotonic()
+        self._next_at = now + (1.0 / self._rps)
+
+    def note_429(self) -> None:
+        if self._max_rps <= 0:
+            return
+        self._rps = max(1.0, self._rps / 2.0)
+
+    def note_success(self) -> None:
+        if self._max_rps <= 0 or self._rps >= self._max_rps:
+            return
+        self._rps = min(self._max_rps, self._rps * 1.25)
+
+
 def kxbtc_event_ticker(close_ts: datetime) -> str:
     """KXBTC event ticker for an hourly close in America/New_York."""
     local = _as_utc(close_ts).astimezone(_ET)
@@ -77,10 +137,13 @@ def parse_settled_kxbtc(
     *,
     start: datetime | None = None,
     end: datetime | None = None,
+    on_skip: Callable[[str, str], None] | None = None,
 ) -> tuple[SettledEvent, ...]:
     """Group finalized KXBTC markets into settled events.
 
     Date filter uses close_time in ``[start, end)`` when bounds are set.
+    Parse failures call ``on_skip(event_ticker, reason)`` when provided;
+    otherwise they raise.
     """
     by_event: dict[str, list[Mapping[str, Any]]] = {}
     for market in markets:
@@ -96,12 +159,17 @@ def parse_settled_kxbtc(
 
     settled: list[SettledEvent] = []
     for event_ticker, rows in by_event.items():
-        close_ts = _event_close_ts(event_ticker, rows)
-        if start_utc is not None and close_ts < start_utc:
-            continue
-        if end_utc is not None and close_ts >= end_utc:
-            continue
-        settled.append(_parse_event(event_ticker, rows, close_ts=close_ts))
+        try:
+            close_ts = _event_close_ts(event_ticker, rows)
+            if start_utc is not None and close_ts < start_utc:
+                continue
+            if end_utc is not None and close_ts >= end_utc:
+                continue
+            settled.append(_parse_event(event_ticker, rows, close_ts=close_ts))
+        except KalshiParseError as exc:
+            if on_skip is None:
+                raise
+            on_skip(event_ticker, str(exc))
 
     settled.sort(key=lambda item: (item.event.close_ts, item.event.event_ticker))
     return tuple(settled)
@@ -118,6 +186,22 @@ def _event_close_ts(
     return close_times.pop()
 
 
+def _event_expiration_value(
+    event_ticker: str, rows: list[Mapping[str, Any]]
+) -> Decimal:
+    # Some brackets arrive with a blank expiration_value; ignore blanks.
+    values = {
+        str(row["expiration_value"]).strip()
+        for row in rows
+        if str(row.get("expiration_value") or "").strip()
+    }
+    if len(values) == 1:
+        return Decimal(values.pop())
+    if not values:
+        raise KalshiParseError(f"{event_ticker}: empty expiration_value")
+    raise KalshiParseError(f"{event_ticker}: inconsistent expiration_value")
+
+
 def _parse_event(
     event_ticker: str,
     rows: list[Mapping[str, Any]],
@@ -127,13 +211,7 @@ def _parse_event(
     if close_ts is None:
         close_ts = _event_close_ts(event_ticker, rows)
 
-    expiration_values = {str(row["expiration_value"]) for row in rows}
-    if len(expiration_values) != 1:
-        raise KalshiParseError(f"{event_ticker}: inconsistent expiration_value")
-    expiration_raw = expiration_values.pop()
-    if not expiration_raw:
-        raise KalshiParseError(f"{event_ticker}: empty expiration_value")
-    expiration_value = Decimal(expiration_raw)
+    expiration_value = _event_expiration_value(event_ticker, rows)
 
     tickers: set[str] = set()
     brackets: list[Bracket] = []
@@ -245,31 +323,66 @@ class KalshiClient:
         self,
         http: httpx.Client,
         *,
+        max_rps: float = DEFAULT_MAX_RPS,
         sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+        on_update: Callable[[FetchUpdate], None] | None = None,
     ) -> None:
         self._http = http
         self._sleep = sleep
+        self._on_update = on_update
+        self._limiter = RateLimiter(max_rps, sleep=sleep, monotonic=monotonic)
+        self._requests = 0
+        self._retries_429 = 0
+        self._markets = 0
+
+    @property
+    def requests(self) -> int:
+        return self._requests
+
+    @property
+    def retries_429(self) -> int:
+        return self._retries_429
 
     def fetch_settled_kxbtc(
         self,
         *,
         start: datetime,
         end: datetime,
+        on_skip: Callable[[str, str], None] | None = None,
     ) -> tuple[SettledEvent, ...]:
         start_utc = _as_utc(start)
         end_utc = _as_utc(end)
         if start_utc >= end_utc:
             raise ValueError("start must be earlier than end")
         markets = self._fetch_settled_markets(start_utc, end_utc)
-        return parse_settled_kxbtc(markets, start=start_utc, end=end_utc)
+        self._emit(
+            "parse",
+            f"grouping {len(markets)} markets",
+            markets=len(markets),
+        )
+        return parse_settled_kxbtc(
+            markets,
+            start=start_utc,
+            end=end_utc,
+            on_skip=on_skip,
+        )
 
     def _fetch_settled_markets(
         self, start: datetime, end: datetime
     ) -> list[dict[str, Any]]:
         by_ticker: dict[str, dict[str, Any]] = {}
+        self._emit("cutoff", "fetching historical cutoff")
+        cutoff = self._market_settled_cutoff()
+        self._emit(
+            "cutoff",
+            f"cutoff {cutoff.isoformat().replace('+00:00', 'Z')}",
+        )
+
         # Live /markets: close_ts filters (not compatible with status=settled).
         # min is "after" so pass start-1 to keep closes at start; client
         # still enforces half-open [start, end).
+        self._emit("live", "fetching live markets in range")
         for market in self._iter_markets(
             "/markets",
             {
@@ -277,18 +390,44 @@ class KalshiClient:
                 "min_close_ts": str(_unix(start) - 1),
                 "max_close_ts": str(_unix(end)),
             },
+            phase="live",
+            unique=by_ticker,
         ):
             by_ticker[market["ticker"]] = market
 
-        cutoff = self._market_settled_cutoff()
         if start < cutoff:
             hist_end = min(end, cutoff)
-            for close in _hourly_closes(start, hist_end):
+            closes = list(_hourly_closes(start, hist_end))
+            total = len(closes)
+            self._emit(
+                "historical",
+                f"{total} hourly events before cutoff",
+                completed=0,
+                total=total,
+            )
+            for index, close in enumerate(closes, start=1):
+                event_ticker = kxbtc_event_ticker(close)
                 for market in self._iter_markets(
                     "/historical/markets",
-                    {"event_ticker": kxbtc_event_ticker(close)},
+                    {"event_ticker": event_ticker},
+                    phase="historical",
+                    unique=by_ticker,
+                    completed=index,
+                    total=total,
+                    detail=event_ticker,
                 ):
                     by_ticker.setdefault(market["ticker"], market)
+        else:
+            self._emit(
+                "historical",
+                "skipped (range is entirely after cutoff)",
+            )
+
+        self._emit(
+            "fetch",
+            f"fetched {len(by_ticker)} unique markets",
+            markets=len(by_ticker),
+        )
         return list(by_ticker.values())
 
     def _market_settled_cutoff(self) -> datetime:
@@ -296,17 +435,38 @@ class KalshiClient:
         return _parse_utc(payload["market_settled_ts"])
 
     def _iter_markets(
-        self, path: str, params: Mapping[str, str]
+        self,
+        path: str,
+        params: Mapping[str, str],
+        *,
+        phase: str,
+        unique: dict[str, dict[str, Any]],
+        completed: int | None = None,
+        total: int | None = None,
+        detail: str | None = None,
     ) -> Iterator[dict[str, Any]]:
         cursor: str | None = None
+        page = 0
         while True:
             query = {**params, "limit": str(PAGE_LIMIT)}
             if cursor:
                 query["cursor"] = cursor
             payload = self._get_json(path, params=query)
+            page += 1
+            page_markets = 0
             for market in payload.get("markets", []):
                 if isinstance(market, dict):
+                    page_markets += 1
                     yield market
+            self._markets = len(unique)
+            label = detail or path
+            self._emit(
+                phase,
+                f"{label} page {page} (+{page_markets})",
+                markets=len(unique),
+                completed=completed,
+                total=total,
+            )
             cursor = payload.get("cursor") or None
             if not cursor:
                 break
@@ -316,12 +476,45 @@ class KalshiClient:
     ) -> Any:
         delay = _INITIAL_429_DELAY_S
         for attempt in range(_MAX_429_ATTEMPTS):
+            self._limiter.wait()
             response = self._http.get(path, params=params)
+            self._requests += 1
             if response.status_code != 429:
                 response.raise_for_status()
+                self._limiter.note_success()
                 return response.json()
+            self._retries_429 += 1
+            self._limiter.note_429()
             if attempt == _MAX_429_ATTEMPTS - 1:
                 response.raise_for_status()
+            self._emit(
+                "throttle",
+                f"429 on {path}; backing off {delay:.1f}s "
+                f"(limit ~{self._limiter.rps:.1f} req/s)",
+            )
             self._sleep(delay)
             delay = min(delay * 2, _MAX_429_DELAY_S)
         raise AssertionError("unreachable")
+
+    def _emit(
+        self,
+        phase: str,
+        detail: str,
+        *,
+        markets: int | None = None,
+        completed: int | None = None,
+        total: int | None = None,
+    ) -> None:
+        if self._on_update is None:
+            return
+        self._on_update(
+            FetchUpdate(
+                phase=phase,
+                detail=detail,
+                requests=self._requests,
+                markets=self._markets if markets is None else markets,
+                retries_429=self._retries_429,
+                completed=completed,
+                total=total,
+            )
+        )

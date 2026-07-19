@@ -12,8 +12,10 @@ import pytest
 
 from bob.kalshi import (
     BASE_URL,
+    FetchUpdate,
     KalshiClient,
     KalshiParseError,
+    RateLimiter,
     kxbtc_event_ticker,
     parse_settled_kxbtc,
 )
@@ -124,6 +126,27 @@ def test_parse_rejects_inconsistent_expiration() -> None:
         parse_settled_kxbtc(markets)
 
 
+def test_parse_ignores_blank_expiration_values() -> None:
+    markets = _load_markets()
+    markets[1]["expiration_value"] = ""
+    markets[2]["expiration_value"] = "  "
+    events = parse_settled_kxbtc(markets)
+    assert len(events) == 1
+    assert events[0].event.expiration_value == Decimal(EXPIRATION)
+
+
+def test_parse_on_skip_continues() -> None:
+    markets = _load_markets()
+    markets[0]["expiration_value"] = "1.00"
+    skipped: list[str] = []
+    events = parse_settled_kxbtc(
+        markets,
+        on_skip=lambda ticker, reason: skipped.append(ticker),
+    )
+    assert events == ()
+    assert skipped == [EVENT]
+
+
 def test_parse_rejects_non_finalized() -> None:
     markets = _load_markets()
     markets[0]["status"] = "closed"
@@ -168,7 +191,9 @@ def test_fetch_date_bounds_live_and_skips_historical() -> None:
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
-        events = KalshiClient(http).fetch_settled_kxbtc(start=START, end=END)
+        events = KalshiClient(http, max_rps=0).fetch_settled_kxbtc(
+            start=START, end=END
+        )
 
     assert len(events) == 1
     assert len(events[0].brackets) == 3
@@ -256,7 +281,9 @@ def test_fetch_historical_by_event_ticker() -> None:
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
-        events = KalshiClient(http).fetch_settled_kxbtc(start=start, end=end)
+        events = KalshiClient(http, max_rps=0).fetch_settled_kxbtc(
+            start=start, end=end
+        )
 
     assert len(events) == 1
     assert events[0].event.event_ticker == event
@@ -292,9 +319,9 @@ def test_fetch_retries_429() -> None:
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
-        events = KalshiClient(http, sleep=sleeps.append).fetch_settled_kxbtc(
-            start=START, end=END
-        )
+        events = KalshiClient(
+            http, max_rps=0, sleep=sleeps.append
+        ).fetch_settled_kxbtc(start=START, end=END)
     assert len(events) == 1
     assert attempts["n"] == 3
     assert sleeps == [0.5, 1.0]
@@ -307,7 +334,9 @@ def test_fetch_requires_ordered_bounds() -> None:
     transport = httpx.MockTransport(handler)
     with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
         with pytest.raises(ValueError, match="earlier"):
-            KalshiClient(http).fetch_settled_kxbtc(start=END, end=START)
+            KalshiClient(http, max_rps=0).fetch_settled_kxbtc(
+                start=END, end=START
+            )
 
 
 def test_fetch_raises_for_status() -> None:
@@ -319,4 +348,62 @@ def test_fetch_raises_for_status() -> None:
     transport = httpx.MockTransport(handler)
     with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
         with pytest.raises(httpx.HTTPStatusError):
-            KalshiClient(http).fetch_settled_kxbtc(start=START, end=END)
+            KalshiClient(http, max_rps=0).fetch_settled_kxbtc(
+                start=START, end=END
+            )
+
+
+def test_rate_limiter_paces_and_slows_on_429() -> None:
+    now = {"t": 0.0}
+    sleeps: list[float] = []
+
+    def monotonic() -> float:
+        return now["t"]
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now["t"] += seconds
+
+    limiter = RateLimiter(10.0, sleep=sleep, monotonic=monotonic)
+    limiter.wait()
+    now["t"] += 0.05
+    limiter.wait()
+    assert sleeps == pytest.approx([0.05])
+    limiter.note_429()
+    assert limiter.rps == 5.0
+    limiter.note_success()
+    assert limiter.rps == pytest.approx(6.25)
+
+
+def test_fetch_emits_progress_updates() -> None:
+    updates: list[FetchUpdate] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/historical/cutoff"):
+            return httpx.Response(200, json=OLD_CUTOFF)
+        return httpx.Response(
+            200,
+            json={
+                "cursor": "",
+                "markets": [
+                    _bracket(
+                        WINNER, result="yes", floor_strike=400, cap_strike=499.99
+                    ),
+                    _bracket(LOWER, result="no", cap_strike=100),
+                    _bracket(UPPER, result="no", floor_strike=999999),
+                ],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
+        KalshiClient(
+            http, max_rps=0, on_update=updates.append
+        ).fetch_settled_kxbtc(start=START, end=END)
+
+    phases = [update.phase for update in updates]
+    assert "cutoff" in phases
+    assert "live" in phases
+    assert "historical" in phases
+    assert "parse" in phases
+    assert any("skipped" in update.detail for update in updates)
