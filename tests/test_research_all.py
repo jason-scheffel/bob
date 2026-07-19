@@ -124,8 +124,8 @@ def test_research_pnl_all_matches_solo(tmp_path: Path) -> None:
         assert item.by_minute == solo[item.strategy].by_minute
 
 
-def test_strategy_names_cover_s1_to_s14() -> None:
-    assert STRATEGY_NAMES == tuple(f"s{i}" for i in range(1, 15))
+def test_strategy_names_cover_s1_to_s15() -> None:
+    assert STRATEGY_NAMES == tuple(f"s{i}" for i in range(1, 16))
 
 
 def test_run_all_rejects_memory_db() -> None:

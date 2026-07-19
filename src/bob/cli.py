@@ -52,13 +52,30 @@ from bob.kalshi import (
     require_kalshi_credentials,
 )
 from bob.market_candles import run_backfill_market_candles
-from bob.research import s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14
+from bob.research import (
+    s1,
+    s2,
+    s3,
+    s4,
+    s5,
+    s6,
+    s7,
+    s8,
+    s9,
+    s10,
+    s11,
+    s12,
+    s13,
+    s14,
+    s15,
+)
 from bob.research.pnl import score_trades_by_minute
 from bob.research.runner import run_all_strategy_pnl
 from bob.research.s1 import Side
 from bob.research.s12 import DEFAULT_TAU
 from bob.research.s13 import DEFAULT_P_STAR
 from bob.research.s14 import DEFAULT_Q_STAR
+from bob.research.s15 import DEFAULT_DWELL, DEFAULT_MOVE
 
 DEFAULT_DB = Path("data/bob.sqlite")
 
@@ -69,7 +86,7 @@ app = typer.Typer(
 research_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
-    help="Offline quote-sim research (named strategies: s1–s14).",
+    help="Offline quote-sim research (named strategies: s1–s15).",
 )
 app.add_typer(research_app, name="research")
 console = Console(stderr=True)
@@ -631,6 +648,26 @@ def parse_tau(value: str) -> Decimal:
     return tau
 
 
+def parse_positive_decimal(value: str) -> Decimal:
+    try:
+        amount = Decimal(value)
+    except InvalidOperation as exc:
+        raise typer.BadParameter("must be a positive decimal") from exc
+    if not amount.is_finite() or amount <= 0:
+        raise typer.BadParameter("must be a positive decimal")
+    return amount
+
+
+def parse_dwell(value: str) -> int:
+    try:
+        dwell = int(value)
+    except ValueError as exc:
+        raise typer.BadParameter("dwell must be an integer >= 2") from exc
+    if dwell < 2:
+        raise typer.BadParameter("dwell must be an integer >= 2")
+    return dwell
+
+
 def parse_side(value: str) -> Side:
     normalized = value.strip().lower()
     if normalized == "yes":
@@ -1117,6 +1154,86 @@ def research_s14(
     )
 
 
+@research_app.command("s15")
+def research_s15(
+    db: Annotated[
+        Path,
+        typer.Option(help="SQLite path."),
+    ] = DEFAULT_DB,
+    minutes: Annotated[
+        str,
+        typer.Option(help="Comma-separated checkpoint minutes (35..59)."),
+    ] = ",".join(str(minute) for minute in s15.DEFAULT_CHECKPOINT_MINUTES),
+    side: Annotated[
+        Side,
+        typer.Option(
+            help="Buy YES or NO on the selected bracket.",
+            parser=parse_side,
+            metavar="yes|no",
+        ),
+    ] = "yes",
+    move: Annotated[
+        Decimal,
+        typer.Option(
+            help="Minimum |close_M − open_1| impulse in dollars.",
+            parser=parse_positive_decimal,
+            metavar="USD",
+        ),
+    ] = DEFAULT_MOVE,
+    dwell: Annotated[
+        int,
+        typer.Option(
+            help="Consecutive closes that must stay in the current bracket.",
+            parser=parse_dwell,
+            metavar="N",
+        ),
+    ] = DEFAULT_DWELL,
+    start: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC start of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC end of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+) -> None:
+    """s15: impulse–flag arrival current-bracket hold (quote-sim)."""
+    require_gate()
+    minute_list = _research_common_options(db, start, end, minutes)
+    connection = connect(db)
+    try:
+        report = s15.evaluate(
+            connection,
+            minutes=minute_list,
+            side=side,
+            move=move,
+            dwell=dwell,
+            start=start,
+            end=end,
+        )
+        by_minute = score_trades_by_minute(connection, report.trades, minute_list)
+    finally:
+        connection.close()
+    _print_research_tables(
+        strategy=report.strategy,
+        summary=(
+            f"{s15.STRATEGY_SUMMARY} · move={report.move} · dwell={report.dwell}"
+        ),
+        side=report.side,
+        by_minute=by_minute,
+        outcome_minutes=report.minutes,
+        abstention_attr="abstained",
+    )
+
+
 def _print_all_research_table(summaries) -> None:
     minutes = []
     for item in summaries:
@@ -1211,6 +1328,22 @@ def research_all(
             metavar="0..1",
         ),
     ] = DEFAULT_Q_STAR,
+    move: Annotated[
+        Decimal,
+        typer.Option(
+            help="s15 only: minimum |close_M − open_1| impulse in dollars.",
+            parser=parse_positive_decimal,
+            metavar="USD",
+        ),
+    ] = DEFAULT_MOVE,
+    dwell: Annotated[
+        int,
+        typer.Option(
+            help="s15 only: consecutive closes in the current bracket.",
+            parser=parse_dwell,
+            metavar="N",
+        ),
+    ] = DEFAULT_DWELL,
     start: Annotated[
         datetime | None,
         typer.Option(
@@ -1229,10 +1362,10 @@ def research_all(
     ] = None,
     workers: Annotated[
         int | None,
-        typer.Option(help="Process pool size (default: min(14, CPUs))."),
+        typer.Option(help="Process pool size (default: min(15, CPUs))."),
     ] = None,
 ) -> None:
-    """Run s1–s14 quote-sim in parallel; one table per checkpoint minute."""
+    """Run s1–s15 quote-sim in parallel; one table per checkpoint minute."""
     require_gate()
     minute_list = _research_common_options(db, start, end, minutes)
     _validate_minutes_for_all(minute_list)
@@ -1250,6 +1383,8 @@ def research_all(
             tau=tau,
             p_star=p_star,
             q_star=q_star,
+            move=move,
+            dwell=dwell,
             workers=workers,
         )
     except Exception as exc:
