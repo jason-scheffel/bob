@@ -68,6 +68,7 @@ from bob.research import (
     s13,
     s14,
     s15,
+    s16,
 )
 from bob.research.pnl import score_trades_by_minute
 from bob.research.runner import run_all_strategy_pnl
@@ -76,6 +77,7 @@ from bob.research.s12 import DEFAULT_TAU
 from bob.research.s13 import DEFAULT_P_STAR
 from bob.research.s14 import DEFAULT_Q_STAR
 from bob.research.s15 import DEFAULT_DWELL, DEFAULT_MOVE
+from bob.research.s16 import DEFAULT_MAX_MOVE
 
 DEFAULT_DB = Path("data/bob.sqlite")
 
@@ -86,7 +88,7 @@ app = typer.Typer(
 research_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
-    help="Offline quote-sim research (named strategies: s1–s15).",
+    help="Offline quote-sim research (named strategies: s1–s16).",
 )
 app.add_typer(research_app, name="research")
 console = Console(stderr=True)
@@ -1234,6 +1236,76 @@ def research_s15(
     )
 
 
+@research_app.command("s16")
+def research_s16(
+    db: Annotated[
+        Path,
+        typer.Option(help="SQLite path."),
+    ] = DEFAULT_DB,
+    minutes: Annotated[
+        str,
+        typer.Option(help="Comma-separated checkpoint minutes (31..59)."),
+    ] = ",".join(str(minute) for minute in s16.DEFAULT_CHECKPOINT_MINUTES),
+    side: Annotated[
+        Side,
+        typer.Option(
+            help="Buy YES or NO on the selected bracket.",
+            parser=parse_side,
+            metavar="yes|no",
+        ),
+    ] = "yes",
+    max_move: Annotated[
+        Decimal,
+        typer.Option(
+            "--max-move",
+            help="Abstain when |close_M − open_1| ≥ max-move (dollars).",
+            parser=parse_positive_decimal,
+            metavar="USD",
+        ),
+    ] = DEFAULT_MAX_MOVE,
+    start: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC start of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC end of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+) -> None:
+    """s16: horizon-confirmed calm current-bracket hold (quote-sim)."""
+    require_gate()
+    minute_list = _research_common_options(db, start, end, minutes)
+    connection = connect(db)
+    try:
+        report = s16.evaluate(
+            connection,
+            minutes=minute_list,
+            side=side,
+            max_move=max_move,
+            start=start,
+            end=end,
+        )
+        by_minute = score_trades_by_minute(connection, report.trades, minute_list)
+    finally:
+        connection.close()
+    _print_research_tables(
+        strategy=report.strategy,
+        summary=f"{s16.STRATEGY_SUMMARY} · max_move={report.max_move}",
+        side=report.side,
+        by_minute=by_minute,
+        outcome_minutes=report.minutes,
+        abstention_attr="abstained",
+    )
+
+
 def _print_all_research_table(summaries) -> None:
     minutes = []
     for item in summaries:
@@ -1344,6 +1416,15 @@ def research_all(
             metavar="N",
         ),
     ] = DEFAULT_DWELL,
+    max_move: Annotated[
+        Decimal,
+        typer.Option(
+            "--max-move",
+            help="s16 only: abstain when |close_M − open_1| ≥ max-move.",
+            parser=parse_positive_decimal,
+            metavar="USD",
+        ),
+    ] = DEFAULT_MAX_MOVE,
     start: Annotated[
         datetime | None,
         typer.Option(
@@ -1362,10 +1443,10 @@ def research_all(
     ] = None,
     workers: Annotated[
         int | None,
-        typer.Option(help="Process pool size (default: min(15, CPUs))."),
+        typer.Option(help="Process pool size (default: min(16, CPUs))."),
     ] = None,
 ) -> None:
-    """Run s1–s15 quote-sim in parallel; one table per checkpoint minute."""
+    """Run s1–s16 quote-sim in parallel; one table per checkpoint minute."""
     require_gate()
     minute_list = _research_common_options(db, start, end, minutes)
     _validate_minutes_for_all(minute_list)
@@ -1385,6 +1466,7 @@ def research_all(
             q_star=q_star,
             move=move,
             dwell=dwell,
+            max_move=max_move,
             workers=workers,
         )
     except Exception as exc:
