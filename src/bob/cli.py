@@ -70,6 +70,7 @@ from bob.research import (
     s15,
     s16,
     s17,
+    s18,
 )
 from bob.research.pnl import score_trades_by_minute
 from bob.research.runner import run_all_strategy_pnl
@@ -90,7 +91,7 @@ app = typer.Typer(
 research_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
-    help="Offline quote-sim research (named strategies: s1–s17).",
+    help="Offline quote-sim research (named strategies: s1–s18).",
 )
 app.add_typer(research_app, name="research")
 console = Console(stderr=True)
@@ -1401,6 +1402,14 @@ def research_s17(
     )
 
 
+_register_research_strategy(
+    s18,
+    docstring="s18: matched-horizon edgeward current-bracket hold (quote-sim).",
+    minutes_help="Comma-separated checkpoint minutes (31..59).",
+    has_abstentions=True,
+)
+
+
 def _print_all_research_table(summaries) -> None:
     minutes = []
     for item in summaries:
@@ -1547,10 +1556,10 @@ def research_all(
     ] = None,
     workers: Annotated[
         int | None,
-        typer.Option(help="Process pool size (default: min(17, CPUs))."),
+        typer.Option(help="Process pool size (default: min(18, CPUs))."),
     ] = None,
 ) -> None:
-    """Run s1–s17 quote-sim in parallel; one table per checkpoint minute."""
+    """Run s1–s18 quote-sim in parallel; one table per checkpoint minute."""
     require_gate()
     minute_list = _research_common_options(db, start, end, minutes)
     _validate_minutes_for_all(minute_list)

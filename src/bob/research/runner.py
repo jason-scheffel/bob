@@ -32,6 +32,7 @@ from bob.research import (
     s15,
     s16,
     s17,
+    s18,
 )
 from bob.research.pnl import QuoteSimReport, score_trades, score_trades_by_minute
 from bob.research.s1 import Side
@@ -60,6 +61,7 @@ STRATEGY_MODULES = {
     "s15": s15,
     "s16": s16,
     "s17": s17,
+    "s18": s18,
 }
 
 STRATEGY_NAMES = tuple(STRATEGY_MODULES)
