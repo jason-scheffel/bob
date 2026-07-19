@@ -19,7 +19,14 @@ from bob.browse import (
 )
 from bob.cli import app
 from bob.db import connect, initialize_schema, store_settled_events
-from bob.kalshi import Bracket, Event, SettledEvent
+from bob.kalshi import (
+    STATUS_COMPLETE,
+    STATUS_MISSING_EXPIRATION,
+    Bracket,
+    Event,
+    SettledEvent,
+    no_markets_event,
+)
 from bob.viz import (
     HOURS_PER_DAY,
     filter_coverage,
@@ -41,6 +48,7 @@ def _event(close: datetime, *, ticker: str | None = None) -> SettledEvent:
         event=Event(
             event_ticker=event_ticker,
             close_ts=close,
+            status=STATUS_COMPLETE,
             expiration_value=Decimal("420.69"),
         ),
         brackets=(
@@ -163,6 +171,64 @@ def test_overall_fraction_caps_per_day() -> None:
     assert report.total_events == 48
     assert report.covered_events == 47
     assert report.overall_fraction == 47 / 48
+    connection.close()
+
+
+def test_load_coverage_counts_any_status() -> None:
+    connection = connect(":memory:")
+    initialize_schema(connection)
+    store_settled_events(
+        connection,
+        [
+            _event(datetime(2099, 4, 1, 0, tzinfo=timezone.utc)),
+            no_markets_event(
+                "KXBTC-99APR0101",
+                datetime(2099, 4, 1, 1, tzinfo=timezone.utc),
+            ),
+            SettledEvent(
+                event=Event(
+                    event_ticker="KXBTC-99APR0102",
+                    close_ts=datetime(2099, 4, 1, 2, tzinfo=timezone.utc),
+                    status=STATUS_MISSING_EXPIRATION,
+                    expiration_value=None,
+                ),
+                brackets=(
+                    Bracket(
+                        ticker="KXBTC-99APR0102-B420",
+                        event_ticker="KXBTC-99APR0102",
+                        floor_strike=Decimal("400"),
+                        cap_strike=Decimal("499.99"),
+                        won=True,
+                    ),
+                ),
+            ),
+        ],
+    )
+    report = load_coverage(connection)
+    assert report.total_events == 3
+    assert report.days[0].events == 3
+    connection.close()
+
+
+def test_load_events_skips_non_complete() -> None:
+    connection = connect(":memory:")
+    initialize_schema(connection)
+    store_settled_events(
+        connection,
+        [
+            _event(datetime(2099, 4, 1, 12, tzinfo=timezone.utc)),
+            no_markets_event(
+                "KXBTC-99APR0113",
+                datetime(2099, 4, 1, 13, tzinfo=timezone.utc),
+            ),
+        ],
+    )
+    events = load_events(
+        connection,
+        datetime(2099, 4, 1, tzinfo=timezone.utc),
+        datetime(2099, 4, 2, tzinfo=timezone.utc),
+    )
+    assert [event.event_ticker for event in events] == ["KXBTC-99APR0112"]
     connection.close()
 
 

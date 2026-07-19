@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
+from bob.kalshi import STATUS_COMPLETE
+
 _ET = ZoneInfo("America/New_York")
 
 
@@ -92,9 +94,11 @@ def load_events(
         SELECT event_ticker, close_ts, expiration_value
         FROM events
         WHERE close_ts >= ? AND close_ts < ?
+          AND status = ?
+          AND expiration_value IS NOT NULL
         ORDER BY close_ts, event_ticker
         """,
-        (start_unix, end_unix),
+        (start_unix, end_unix, STATUS_COMPLETE),
     ).fetchall()
     return tuple(
         EventRow(

@@ -12,10 +12,14 @@ import pytest
 
 from bob.kalshi import (
     BASE_URL,
+    STATUS_COMPLETE,
+    STATUS_MISSING_EXPIRATION,
+    STATUS_NO_MARKETS,
     FetchUpdate,
     KalshiClient,
     KalshiParseError,
     RateLimiter,
+    expected_kxbtc_event_tickers,
     kxbtc_event_ticker,
     parse_settled_kxbtc,
 )
@@ -70,6 +74,7 @@ def test_parse_settled_kxbtc_groups_event() -> None:
     settled = events[0]
     assert settled.event.event_ticker == EVENT
     assert settled.event.close_ts == CLOSE
+    assert settled.event.status == STATUS_COMPLETE
     assert settled.event.expiration_value == Decimal(EXPIRATION)
     assert len(settled.brackets) == 3
     winners = [b for b in settled.brackets if b.won]
@@ -132,7 +137,19 @@ def test_parse_ignores_blank_expiration_values() -> None:
     markets[2]["expiration_value"] = "  "
     events = parse_settled_kxbtc(markets)
     assert len(events) == 1
+    assert events[0].event.status == STATUS_COMPLETE
     assert events[0].event.expiration_value == Decimal(EXPIRATION)
+
+
+def test_parse_all_blank_expiration_is_missing_status() -> None:
+    markets = _load_markets()
+    for market in markets:
+        market["expiration_value"] = ""
+    events = parse_settled_kxbtc(markets)
+    assert len(events) == 1
+    assert events[0].event.status == STATUS_MISSING_EXPIRATION
+    assert events[0].event.expiration_value is None
+    assert sum(1 for bracket in events[0].brackets if bracket.won) == 1
 
 
 def test_parse_on_skip_continues() -> None:
@@ -195,8 +212,15 @@ def test_fetch_date_bounds_live_and_skips_historical() -> None:
             start=START, end=END
         )
 
-    assert len(events) == 1
-    assert len(events[0].brackets) == 3
+    expected = expected_kxbtc_event_tickers(START, END)
+    assert len(events) == len(expected)
+    complete = [item for item in events if item.event.status == STATUS_COMPLETE]
+    assert len(complete) == 1
+    assert len(complete[0].brackets) == 3
+    assert (
+        sum(1 for item in events if item.event.status == STATUS_NO_MARKETS)
+        == len(expected) - 1
+    )
     live_calls = [
         (path, params)
         for path, params in calls
@@ -210,6 +234,75 @@ def test_fetch_date_bounds_live_and_skips_historical() -> None:
     assert live_calls[0][1]["max_close_ts"] == str(int(END.timestamp()))
     assert live_calls[0][1]["limit"] == "1000"
     assert not any(path.endswith("/historical/markets") for path, _ in calls)
+
+
+def test_fetch_only_event_tickers_skips_other_hours() -> None:
+    start = datetime(2024, 4, 1, 4, 0, tzinfo=timezone.utc)
+    end = datetime(2024, 4, 1, 6, 0, tzinfo=timezone.utc)
+    keep = kxbtc_event_ticker(start)
+    skip = kxbtc_event_ticker(datetime(2024, 4, 1, 5, 0, tzinfo=timezone.utc))
+    assert expected_kxbtc_event_tickers(start, end) == frozenset({keep, skip})
+    hist_tickers: list[str] = []
+    live_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal live_calls
+        path = request.url.path
+        if path.endswith("/historical/cutoff"):
+            return httpx.Response(
+                200,
+                json={
+                    "market_settled_ts": "2025-01-01T00:00:00Z",
+                    "trades_created_ts": "2025-01-01T00:00:00Z",
+                    "orders_updated_ts": "2025-01-01T00:00:00Z",
+                },
+            )
+        if path.endswith("/historical/markets"):
+            hist_tickers.append(request.url.params["event_ticker"])
+            return httpx.Response(
+                200,
+                json={
+                    "cursor": "",
+                    "markets": [
+                        {
+                            "ticker": f"{keep}-B420",
+                            "event_ticker": keep,
+                            "status": "finalized",
+                            "result": "yes",
+                            "close_time": "2024-04-01T04:00:00Z",
+                            "expiration_value": EXPIRATION,
+                            "floor_strike": 400,
+                            "cap_strike": 499.99,
+                        },
+                        {
+                            "ticker": f"{keep}-T100",
+                            "event_ticker": keep,
+                            "status": "finalized",
+                            "result": "no",
+                            "close_time": "2024-04-01T04:00:00Z",
+                            "expiration_value": EXPIRATION,
+                            "cap_strike": 100,
+                        },
+                    ],
+                },
+            )
+        if path.endswith("/markets"):
+            live_calls += 1
+            return httpx.Response(500, json={"message": "live should skip"})
+        return httpx.Response(404, json={"message": "not found"})
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
+        events = KalshiClient(http, max_rps=0).fetch_settled_kxbtc(
+            start=start,
+            end=end,
+            only_event_tickers=frozenset({keep}),
+        )
+
+    assert hist_tickers == [keep]
+    assert live_calls == 0
+    assert len(events) == 1
+    assert events[0].event.event_ticker == keep
 
 
 def test_fetch_historical_by_event_ticker() -> None:
@@ -322,7 +415,8 @@ def test_fetch_retries_429() -> None:
         events = KalshiClient(
             http, max_rps=0, sleep=sleeps.append
         ).fetch_settled_kxbtc(start=START, end=END)
-    assert len(events) == 1
+    assert len(events) == len(expected_kxbtc_event_tickers(START, END))
+    assert sum(1 for item in events if item.event.status == STATUS_COMPLETE) == 1
     assert attempts["n"] == 3
     assert sleeps == [0.5, 1.0]
 

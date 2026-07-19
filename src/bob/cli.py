@@ -23,9 +23,20 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from bob.db import StoreCounts, connect, initialize_schema, store_settled_events
+from bob.db import (
+    StoreCounts,
+    connect,
+    event_tickers_in_close_range,
+    initialize_schema,
+    store_settled_events,
+)
 from bob.gate import require_gate
-from bob.kalshi import BASE_URL, DEFAULT_MAX_RPS, KalshiClient
+from bob.kalshi import (
+    BASE_URL,
+    DEFAULT_MAX_RPS,
+    KalshiClient,
+    expected_kxbtc_event_tickers,
+)
 
 DEFAULT_DB = Path("data/bob.sqlite")
 
@@ -74,6 +85,7 @@ def run_backfill(
     start: datetime,
     end: datetime,
     *,
+    force: bool = False,
     on_day_start=None,
     on_day=None,
     on_skip=None,
@@ -81,6 +93,11 @@ def run_backfill(
     total_events = 0
     total_brackets = 0
     chunks = list(iter_utc_day_chunks(start, end))
+    known = (
+        set()
+        if force
+        else event_tickers_in_close_range(connection, start, end)
+    )
     for index, (chunk_start, chunk_end) in enumerate(chunks, start=1):
         if on_day_start is not None:
             on_day_start(
@@ -88,14 +105,38 @@ def run_backfill(
                 days=len(chunks),
                 day_start=chunk_start,
             )
+        expected = expected_kxbtc_event_tickers(chunk_start, chunk_end)
+        only_event_tickers: frozenset[str] | None = None
+        already = 0
+        if not force:
+            existing = expected & known
+            missing = expected - known
+            already = len(existing)
+            if not missing:
+                if on_day is not None:
+                    on_day(
+                        index=index,
+                        days=len(chunks),
+                        day_start=chunk_start,
+                        counts=StoreCounts(events=0, brackets=0),
+                        requests=0,
+                        retries_429=0,
+                        already=already,
+                        missing=0,
+                    )
+                continue
+            only_event_tickers = frozenset(missing)
         req_before = client.requests
         retries_before = client.retries_429
         events = client.fetch_settled_kxbtc(
             start=chunk_start,
             end=chunk_end,
             on_skip=on_skip,
+            only_event_tickers=only_event_tickers,
         )
         counts = store_settled_events(connection, events)
+        if not force:
+            known.update(item.event.event_ticker for item in events)
         total_events += counts.events
         total_brackets += counts.brackets
         if on_day is not None:
@@ -106,6 +147,12 @@ def run_backfill(
                 counts=counts,
                 requests=client.requests - req_before,
                 retries_429=client.retries_429 - retries_before,
+                already=already,
+                missing=(
+                    len(only_event_tickers)
+                    if only_event_tickers is not None
+                    else len(expected)
+                ),
             )
     return StoreCounts(events=total_events, brackets=total_brackets)
 
@@ -161,6 +208,13 @@ def backfill(
             ),
         ),
     ] = DEFAULT_MAX_RPS,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Refetch every hour even when it already exists in SQLite.",
+        ),
+    ] = False,
 ) -> None:
     """Backfill settled KXBTC events and brackets into SQLite."""
     require_gate()
@@ -192,6 +246,19 @@ def backfill(
             expand=True,
         ) as progress:
             task_id = progress.add_task("days", total=days)
+            skip_days = 0
+            skip_hours = 0
+
+            def flush_skips() -> None:
+                nonlocal skip_days, skip_hours
+                if skip_days <= 0:
+                    return
+                progress.console.print(
+                    f"skipped {skip_days} days "
+                    f"({skip_hours} hours already stored)"
+                )
+                skip_days = 0
+                skip_hours = 0
 
             def on_day_start(
                 *,
@@ -201,7 +268,7 @@ def backfill(
             ) -> None:
                 progress.update(
                     task_id,
-                    description=f"fetching {_day_label(day_start)}",
+                    description=f"scanning {_day_label(day_start)}",
                 )
 
             def on_day(
@@ -212,8 +279,21 @@ def backfill(
                 counts: StoreCounts,
                 requests: int,
                 retries_429: int,
+                already: int,
+                missing: int,
             ) -> None:
+                nonlocal skip_days, skip_hours
                 day = _day_label(day_start)
+                if missing == 0 and not force:
+                    skip_days += 1
+                    skip_hours += already
+                    progress.update(
+                        task_id,
+                        completed=index,
+                        description=f"scanning {day}",
+                    )
+                    return
+                flush_skips()
                 extra = f", {retries_429}×429" if retries_429 else ""
                 remaining = days - index
                 if index > 0 and remaining > 0:
@@ -224,11 +304,21 @@ def backfill(
                     eta = "0s"
                 else:
                     eta = "?"
+                if already and not force:
+                    summary = (
+                        f"stored {counts.events} events, "
+                        f"{counts.brackets} brackets  "
+                        f"({missing} missing, {already} skipped)"
+                    )
+                else:
+                    summary = (
+                        f"stored {counts.events} events, "
+                        f"{counts.brackets} brackets"
+                    )
                 # Permanent day log (not overwritten by the live bar).
                 progress.console.print(
                     f"[{index}/{days}] {day}  "
-                    f"stored {counts.events} events, "
-                    f"{counts.brackets} brackets  "
+                    f"{summary}  "
                     f"({requests} req{extra})  "
                     f"ETA {eta}"
                 )
@@ -244,10 +334,12 @@ def backfill(
                     KalshiClient(http, max_rps=rps),
                     start,
                     end,
+                    force=force,
                     on_day_start=on_day_start,
                     on_day=on_day,
                     on_skip=on_skip,
                 )
+            flush_skips()
             progress.update(task_id, description="done")
     finally:
         connection.close()

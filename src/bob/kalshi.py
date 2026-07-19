@@ -35,12 +35,17 @@ _MAX_429_DELAY_S = 30.0
 # Basic Read is 200 tokens/s at ~10 tokens/GET ≈ 20 req/s. Default stays well under.
 DEFAULT_MAX_RPS = 5.0
 
+STATUS_COMPLETE = "complete"
+STATUS_MISSING_EXPIRATION = "missing_expiration_value"
+STATUS_NO_MARKETS = "no_markets"
+
 
 @dataclass(frozen=True, slots=True)
 class Event:
     event_ticker: str
     close_ts: datetime
-    expiration_value: Decimal
+    status: str
+    expiration_value: Decimal | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +137,15 @@ def kxbtc_event_ticker(close_ts: datetime) -> str:
     )
 
 
+def expected_kxbtc_event_tickers(
+    start: datetime, end: datetime
+) -> frozenset[str]:
+    """Event tickers for hourly KXBTC closes in ``[start, end)``."""
+    return frozenset(
+        kxbtc_event_ticker(close) for close in _hourly_closes(start, end)
+    )
+
+
 def parse_settled_kxbtc(
     markets: Iterable[Mapping[str, Any]],
     *,
@@ -188,7 +202,7 @@ def _event_close_ts(
 
 def _event_expiration_value(
     event_ticker: str, rows: list[Mapping[str, Any]]
-) -> Decimal:
+) -> Decimal | None:
     # Some brackets arrive with a blank expiration_value; ignore blanks.
     values = {
         str(row["expiration_value"]).strip()
@@ -198,21 +212,13 @@ def _event_expiration_value(
     if len(values) == 1:
         return Decimal(values.pop())
     if not values:
-        raise KalshiParseError(f"{event_ticker}: empty expiration_value")
+        return None
     raise KalshiParseError(f"{event_ticker}: inconsistent expiration_value")
 
 
-def _parse_event(
-    event_ticker: str,
-    rows: list[Mapping[str, Any]],
-    *,
-    close_ts: datetime | None = None,
-) -> SettledEvent:
-    if close_ts is None:
-        close_ts = _event_close_ts(event_ticker, rows)
-
-    expiration_value = _event_expiration_value(event_ticker, rows)
-
+def _parse_brackets(
+    event_ticker: str, rows: list[Mapping[str, Any]]
+) -> tuple[Bracket, ...]:
     tickers: set[str] = set()
     brackets: list[Bracket] = []
     winners = 0
@@ -261,13 +267,46 @@ def _parse_event(
             b.ticker,
         )
     )
+    return tuple(brackets)
+
+
+def _parse_event(
+    event_ticker: str,
+    rows: list[Mapping[str, Any]],
+    *,
+    close_ts: datetime | None = None,
+) -> SettledEvent:
+    if close_ts is None:
+        close_ts = _event_close_ts(event_ticker, rows)
+
+    brackets = _parse_brackets(event_ticker, rows)
+    expiration_value = _event_expiration_value(event_ticker, rows)
+    status = (
+        STATUS_COMPLETE
+        if expiration_value is not None
+        else STATUS_MISSING_EXPIRATION
+    )
     return SettledEvent(
         event=Event(
             event_ticker=event_ticker,
             close_ts=close_ts,
+            status=status,
             expiration_value=expiration_value,
         ),
-        brackets=tuple(brackets),
+        brackets=brackets,
+    )
+
+
+def no_markets_event(event_ticker: str, close_ts: datetime) -> SettledEvent:
+    """Observation that Kalshi returned no markets for an expected hour."""
+    return SettledEvent(
+        event=Event(
+            event_ticker=event_ticker,
+            close_ts=_as_utc(close_ts),
+            status=STATUS_NO_MARKETS,
+            expiration_value=None,
+        ),
+        brackets=(),
     )
 
 
@@ -350,28 +389,75 @@ class KalshiClient:
         start: datetime,
         end: datetime,
         on_skip: Callable[[str, str], None] | None = None,
+        only_event_tickers: frozenset[str] | None = None,
     ) -> tuple[SettledEvent, ...]:
         start_utc = _as_utc(start)
         end_utc = _as_utc(end)
         if start_utc >= end_utc:
             raise ValueError("start must be earlier than end")
-        markets = self._fetch_settled_markets(start_utc, end_utc)
+        markets = self._fetch_settled_markets(
+            start_utc,
+            end_utc,
+            only_event_tickers=only_event_tickers,
+        )
         self._emit(
             "parse",
             f"grouping {len(markets)} markets",
             markets=len(markets),
         )
-        return parse_settled_kxbtc(
-            markets,
-            start=start_utc,
-            end=end_utc,
-            on_skip=on_skip,
+        settled = list(
+            parse_settled_kxbtc(
+                markets,
+                start=start_utc,
+                end=end_utc,
+                on_skip=on_skip,
+            )
         )
+        seen = {
+            market["event_ticker"]
+            for market in markets
+            if isinstance(market.get("event_ticker"), str)
+        }
+        requested = (
+            only_event_tickers
+            if only_event_tickers is not None
+            else expected_kxbtc_event_tickers(start_utc, end_utc)
+        )
+        close_by_ticker = {
+            kxbtc_event_ticker(close): close
+            for close in _hourly_closes(start_utc, end_utc)
+        }
+        for event_ticker in sorted(requested):
+            if event_ticker in seen:
+                continue
+            close_ts = close_by_ticker.get(event_ticker)
+            if close_ts is None:
+                continue
+            settled.append(no_markets_event(event_ticker, close_ts))
+        settled.sort(
+            key=lambda item: (item.event.close_ts, item.event.event_ticker)
+        )
+        return tuple(settled)
 
     def _fetch_settled_markets(
-        self, start: datetime, end: datetime
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        only_event_tickers: frozenset[str] | None = None,
     ) -> list[dict[str, Any]]:
         by_ticker: dict[str, dict[str, Any]] = {}
+        wanted_closes: list[datetime] | None = None
+        if only_event_tickers is not None:
+            wanted_closes = [
+                close
+                for close in _hourly_closes(start, end)
+                if kxbtc_event_ticker(close) in only_event_tickers
+            ]
+            if not wanted_closes:
+                self._emit("fetch", "nothing to fetch", markets=0)
+                return []
+
         self._emit("cutoff", "fetching historical cutoff")
         cutoff = self._market_settled_cutoff()
         self._emit(
@@ -379,33 +465,57 @@ class KalshiClient:
             f"cutoff {cutoff.isoformat().replace('+00:00', 'Z')}",
         )
 
+        live_needed = (
+            True
+            if wanted_closes is None
+            else any(close >= cutoff for close in wanted_closes)
+        )
         # Live /markets: close_ts filters (not compatible with status=settled).
         # min is "after" so pass start-1 to keep closes at start; client
         # still enforces half-open [start, end).
-        self._emit("live", "fetching live markets in range")
-        for market in self._iter_markets(
-            "/markets",
-            {
-                "series_ticker": SERIES_TICKER,
-                "min_close_ts": str(_unix(start) - 1),
-                "max_close_ts": str(_unix(end)),
-            },
-            phase="live",
-            unique=by_ticker,
-        ):
-            by_ticker[market["ticker"]] = market
+        if live_needed:
+            self._emit("live", "fetching live markets in range")
+            for market in self._iter_markets(
+                "/markets",
+                {
+                    "series_ticker": SERIES_TICKER,
+                    "min_close_ts": str(_unix(start) - 1),
+                    "max_close_ts": str(_unix(end)),
+                },
+                phase="live",
+                unique=by_ticker,
+            ):
+                event_ticker = market.get("event_ticker")
+                if (
+                    only_event_tickers is not None
+                    and event_ticker not in only_event_tickers
+                ):
+                    continue
+                by_ticker[market["ticker"]] = market
+        else:
+            self._emit(
+                "live",
+                "skipped (no missing hours after cutoff)",
+            )
 
-        if start < cutoff:
-            hist_end = min(end, cutoff)
-            closes = list(_hourly_closes(start, hist_end))
-            total = len(closes)
+        if wanted_closes is None:
+            hist_closes = (
+                list(_hourly_closes(start, min(end, cutoff)))
+                if start < cutoff
+                else []
+            )
+        else:
+            hist_closes = [close for close in wanted_closes if close < cutoff]
+
+        if hist_closes:
+            total = len(hist_closes)
             self._emit(
                 "historical",
                 f"{total} hourly events before cutoff",
                 completed=0,
                 total=total,
             )
-            for index, close in enumerate(closes, start=1):
+            for index, close in enumerate(hist_closes, start=1):
                 event_ticker = kxbtc_event_ticker(close)
                 for market in self._iter_markets(
                     "/historical/markets",
@@ -417,6 +527,11 @@ class KalshiClient:
                     detail=event_ticker,
                 ):
                     by_ticker.setdefault(market["ticker"], market)
+        elif wanted_closes is not None:
+            self._emit(
+                "historical",
+                "skipped (no missing hours before cutoff)",
+            )
         else:
             self._emit(
                 "historical",
