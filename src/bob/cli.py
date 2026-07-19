@@ -22,6 +22,7 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
+from rich.table import Table
 
 from bob.db import (
     StoreCounts,
@@ -43,6 +44,13 @@ from bob.kalshi import (
     load_dotenv,
     require_kalshi_credentials,
 )
+from bob.research.s1 import (
+    DEFAULT_CHECKPOINT_MINUTES,
+    STRATEGY,
+    STRATEGY_SUMMARY,
+    Side,
+    evaluate as evaluate_s1,
+)
 
 DEFAULT_DB = Path("data/bob.sqlite")
 
@@ -50,6 +58,12 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+research_app = typer.Typer(
+    no_args_is_help=True,
+    add_completion=False,
+    help="Offline outcome-accuracy studies (named strategies: s1, …).",
+)
+app.add_typer(research_app, name="research")
 console = Console(stderr=True)
 
 
@@ -64,9 +78,7 @@ def parse_iso_datetime(value: str) -> datetime:
     except ValueError as exc:
         raise typer.BadParameter(f"invalid ISO datetime: {value!r}") from exc
     if parsed.tzinfo is None:
-        raise typer.BadParameter(
-            f"datetime must include timezone or Z: {value!r}"
-        )
+        raise typer.BadParameter(f"datetime must include timezone or Z: {value!r}")
     return parsed.astimezone(timezone.utc)
 
 
@@ -101,11 +113,7 @@ def run_backfill(
     total_brackets = 0
     total_candles = 0
     chunks = list(iter_utc_day_chunks(start, end))
-    known = (
-        set()
-        if force
-        else event_tickers_in_close_range(connection, start, end)
-    )
+    known = set() if force else event_tickers_in_close_range(connection, start, end)
     current = now if now is not None else datetime.now(timezone.utc)
     for index, (chunk_start, chunk_end) in enumerate(chunks, start=1):
         if on_day_start is not None:
@@ -284,8 +292,7 @@ def backfill(
                 if skip_days <= 0:
                     return
                 progress.console.print(
-                    f"skipped {skip_days} days "
-                    f"({skip_hours} hours already stored)"
+                    f"skipped {skip_days} days ({skip_hours} hours already stored)"
                 )
                 skip_days = 0
                 skip_hours = 0
@@ -328,9 +335,7 @@ def backfill(
                 extra = f", {retries_429}×429" if retries_429 else ""
                 remaining = days - index
                 if index > 0 and remaining > 0:
-                    eta = format_eta(
-                        (time.monotonic() - started) / index * remaining
-                    )
+                    eta = format_eta((time.monotonic() - started) / index * remaining)
                 elif remaining == 0:
                     eta = "0s"
                 else:
@@ -361,9 +366,7 @@ def backfill(
                 )
 
             try:
-                with httpx.Client(
-                    base_url=credentials.base_url, timeout=30.0
-                ) as http:
+                with httpx.Client(base_url=credentials.base_url, timeout=30.0) as http:
                     counts = run_backfill(
                         connection,
                         KalshiClient(
@@ -426,6 +429,139 @@ def viz(
         console.print(f"[red]Error:[/red] database not found: {db}")
         raise typer.Exit(code=2)
     raise typer.Exit(code=run_streamlit(db))
+
+
+def parse_checkpoint_minutes(value: str) -> tuple[int, ...]:
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    if not parts:
+        raise typer.BadParameter("minutes must be a non-empty comma list")
+    minutes: list[int] = []
+    for part in parts:
+        try:
+            minute = int(part)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"invalid minute {part!r}; expected integers 1..59"
+            ) from exc
+        if not 1 <= minute <= 59:
+            raise typer.BadParameter(f"minute must be in 1..59, got {minute}")
+        minutes.append(minute)
+    if len(set(minutes)) != len(minutes):
+        raise typer.BadParameter("minutes must be unique")
+    return tuple(minutes)
+
+
+def parse_side(value: str) -> Side:
+    normalized = value.strip().lower()
+    if normalized == "yes":
+        return "yes"
+    if normalized == "no":
+        return "no"
+    raise typer.BadParameter("side must be 'yes' or 'no'")
+
+
+@research_app.command(STRATEGY)
+def research_s1(
+    db: Annotated[
+        Path,
+        typer.Option(help="SQLite path."),
+    ] = DEFAULT_DB,
+    minutes: Annotated[
+        str,
+        typer.Option(
+            help="Comma-separated minutes into the hour (1..59).",
+        ),
+    ] = ",".join(str(m) for m in DEFAULT_CHECKPOINT_MINUTES),
+    side: Annotated[
+        Side,
+        typer.Option(
+            help="Buy YES or NO on the current bracket.",
+            parser=parse_side,
+            metavar="yes|no",
+        ),
+    ] = "yes",
+    start: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC start of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC end of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+) -> None:
+    """s1: current-bracket hold-to-settlement outcome accuracy."""
+    require_gate()
+    if not db.is_file():
+        console.print(f"[red]Error:[/red] database not found: {db}")
+        raise typer.Exit(code=2)
+    if (start is None) ^ (end is None):
+        console.print("[red]Error:[/red] provide both --start and --end, or neither")
+        raise typer.Exit(code=2)
+    if start is not None and end is not None and start >= end:
+        console.print("[red]Error:[/red] --start must be earlier than --end")
+        raise typer.Exit(code=2)
+    try:
+        minute_list = parse_checkpoint_minutes(minutes)
+    except typer.BadParameter as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    connection = connect(db)
+    try:
+        report = evaluate_s1(
+            connection,
+            minutes=minute_list,
+            side=side,
+            start=start,
+            end=end,
+        )
+    finally:
+        connection.close()
+
+    table = Table(
+        title=(
+            f"{report.strategy} · {STRATEGY_SUMMARY} · "
+            f"side={report.side} · outcome accuracy"
+        )
+    )
+    table.add_column("minute", justify="right")
+    table.add_column("eligible", justify="right")
+    table.add_column("wins", justify="right")
+    table.add_column("losses", justify="right")
+    table.add_column("win_rate", justify="right")
+    for stats in report.minutes:
+        rate = "—" if stats.win_rate is None else f"{stats.win_rate * 100:.1f}%"
+        table.add_row(
+            str(stats.minute),
+            str(stats.eligible),
+            str(stats.wins),
+            str(stats.losses),
+            rate,
+        )
+    console.print(table)
+
+    exclusion_keys = sorted(
+        {reason for stats in report.minutes for reason in stats.exclusions}
+    )
+    if exclusion_keys:
+        excl = Table(title="Exclusions")
+        excl.add_column("minute", justify="right")
+        for key in exclusion_keys:
+            excl.add_column(key, justify="right")
+        for stats in report.minutes:
+            excl.add_row(
+                str(stats.minute),
+                *(str(stats.exclusions.get(key, 0)) for key in exclusion_keys),
+            )
+        console.print(excl)
 
 
 def main() -> None:

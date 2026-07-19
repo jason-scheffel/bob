@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jason Scheffel <contact@jasonscheffel.com>
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import math
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -60,7 +61,9 @@ def format_bracket_range(
 
 
 def format_event_label(event: EventRow) -> str:
-    return f"{format_close_et(event.close_ts)} · BTC {format_btc(event.expiration_value)}"
+    return (
+        f"{format_close_et(event.close_ts)} · BTC {format_btc(event.expiration_value)}"
+    )
 
 
 def winning_bracket(brackets: tuple[BracketRow, ...]) -> BracketRow | None:
@@ -79,16 +82,25 @@ def _strike_sort_key(value: str | None) -> tuple[int, Decimal]:
         return (2, Decimal(0))
 
 
+def close_ts_query_bounds(start: datetime, end: datetime) -> tuple[int, int]:
+    """Map half-open ``[start, end)`` onto integer ``close_ts`` bounds.
+
+    Stored ``close_ts`` values are whole seconds. Using ``ceil`` keeps
+    fractional bounds exact: an event at ``T`` is included iff
+    ``start <= T < end``.
+    """
+    if start.tzinfo is None or end.tzinfo is None:
+        raise ValueError("start and end must be timezone-aware")
+    return math.ceil(start.timestamp()), math.ceil(end.timestamp())
+
+
 def load_events(
     connection: sqlite3.Connection,
     start: datetime,
     end: datetime,
 ) -> tuple[EventRow, ...]:
     """Return events with ``close_ts`` in half-open ``[start, end)``."""
-    if start.tzinfo is None or end.tzinfo is None:
-        raise ValueError("start and end must be timezone-aware")
-    start_unix = int(start.timestamp())
-    end_unix = int(end.timestamp())
+    start_unix, end_unix = close_ts_query_bounds(start, end)
     rows = connection.execute(
         """
         SELECT event_ticker, close_ts, expiration_value
