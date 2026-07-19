@@ -69,7 +69,7 @@ def _styled_day_calendar(
             if coverage is None:
                 row[name] = f"{day.day}\n—"
             else:
-                row[name] = f"{day.day}\n{coverage.events}/{coverage.expected}"
+                row[name] = f"{day.day}\n{coverage.label()}"
         rows.append(row)
     frame = pd.DataFrame(rows, columns=list(_WEEKDAYS))
 
@@ -137,8 +137,11 @@ def _coverage_tab(report: CoverageReport) -> None:
     else:
         _show_days(selected)
     st.caption(
-        "Green = full · Yellow = partial · Red = empty"
-        + (" · Gray = outside DB span" if level == "Days" else "")
+        "Color = accounted hours (any status). "
+        "✓ complete, · flagged (no market / blank settle). "
+        "Green = full, yellow = partial, red = empty"
+        + (", gray = outside DB span" if level == "Days" else "")
+        + "."
     )
 
 
@@ -153,7 +156,11 @@ def _show_months(report: CoverageReport) -> None:
                 "month": month.label,
                 "days_with_data": month.days_with_data,
                 "empty_days": month.missing_days,
-                "hours": f"{month.covered_events}/{month.expected_events}",
+                "complete": month.complete_events,
+                "flagged": month.flagged_events,
+                "accounted": (
+                    f"{month.covered_events}/{month.expected_events}"
+                ),
                 "coverage": f"{month.overall_fraction:.0%}",
                 "status": month.status,
             }

@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import sqlite3
-from collections import Counter
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+
+from bob.kalshi import STATUS_COMPLETE
 
 HOURS_PER_DAY = 24
 
@@ -12,19 +14,37 @@ HOURS_PER_DAY = 24
 @dataclass(frozen=True, slots=True)
 class DayCoverage:
     day: date
-    events: int
+    complete: int
+    flagged: int
+
+    @property
+    def events(self) -> int:
+        """Accounted hours (any status)."""
+        return self.complete + self.flagged
 
     @property
     def expected(self) -> int:
         return HOURS_PER_DAY
 
     @property
+    def unknown(self) -> int:
+        return max(0, self.expected - self.events)
+
+    @property
     def status(self) -> str:
+        """Color status from accounted hours, not usable BTC prints."""
         if self.events <= 0:
             return "empty"
         if self.events >= self.expected:
             return "full"
         return "partial"
+
+    def label(self) -> str:
+        """Short cell label: complete✓ and flagged· when present."""
+        body = f"{self.complete}✓"
+        if self.flagged:
+            body += f" {self.flagged}·"
+        return body
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,8 +74,20 @@ class CoverageReport:
 
     @property
     def covered_events(self) -> int:
-        """Events counted toward coverage, capped at 24 per day."""
+        """Accounted hours toward coverage, capped at 24 per day."""
         return sum(min(day.events, day.expected) for day in self.days)
+
+    @property
+    def complete_events(self) -> int:
+        return sum(day.complete for day in self.days)
+
+    @property
+    def flagged_events(self) -> int:
+        return sum(day.flagged for day in self.days)
+
+    @property
+    def unknown_events(self) -> int:
+        return max(0, self.expected_events - self.covered_events)
 
     @property
     def overall_fraction(self) -> float:
@@ -91,6 +123,14 @@ class MonthCoverage:
         return sum(min(day.events, day.expected) for day in self.days)
 
     @property
+    def complete_events(self) -> int:
+        return sum(day.complete for day in self.days)
+
+    @property
+    def flagged_events(self) -> int:
+        return sum(day.flagged for day in self.days)
+
+    @property
     def overall_fraction(self) -> float:
         if self.expected_events == 0:
             return 0.0
@@ -107,27 +147,37 @@ class MonthCoverage:
 
 def load_coverage(connection: sqlite3.Connection) -> CoverageReport:
     rows = connection.execute(
-        "SELECT close_ts FROM events ORDER BY close_ts"
+        "SELECT close_ts, status FROM events ORDER BY close_ts"
     ).fetchall()
     if not rows:
         return CoverageReport(days=(), total_events=0)
 
-    counts: Counter[date] = Counter()
-    for (close_ts,) in rows:
+    complete: dict[date, int] = defaultdict(int)
+    flagged: dict[date, int] = defaultdict(int)
+    for close_ts, status in rows:
         day = datetime.fromtimestamp(int(close_ts), tz=timezone.utc).date()
-        counts[day] += 1
+        if status == STATUS_COMPLETE:
+            complete[day] += 1
+        else:
+            flagged[day] += 1
 
-    first = min(counts)
-    last = max(counts)
+    first = min(complete.keys() | flagged.keys())
+    last = max(complete.keys() | flagged.keys())
     days: list[DayCoverage] = []
     cursor = first
     while cursor <= last:
-        days.append(DayCoverage(day=cursor, events=counts.get(cursor, 0)))
+        days.append(
+            DayCoverage(
+                day=cursor,
+                complete=complete.get(cursor, 0),
+                flagged=flagged.get(cursor, 0),
+            )
+        )
         cursor += timedelta(days=1)
 
     return CoverageReport(
         days=tuple(days),
-        total_events=sum(counts.values()),
+        total_events=sum(day.events for day in days),
     )
 
 
@@ -169,7 +219,9 @@ def summarize_report(report: CoverageReport, *, label: str = "Range") -> str:
         return "No events in selection."
     return (
         f"{label}: {report.first_day} → {report.last_day}  ·  "
-        f"{report.days_with_data} with data / {report.missing_days} empty  ·  "
-        f"{report.covered_events}/{report.expected_events} hours "
+        f"{report.complete_events} complete  ·  "
+        f"{report.flagged_events} flagged  ·  "
+        f"{report.unknown_events} unknown  ·  "
+        f"accounted {report.covered_events}/{report.expected_events} "
         f"({report.overall_fraction:.0%})"
     )

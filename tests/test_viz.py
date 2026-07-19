@@ -207,6 +207,40 @@ def test_load_coverage_counts_any_status() -> None:
     report = load_coverage(connection)
     assert report.total_events == 3
     assert report.days[0].events == 3
+    assert report.days[0].complete == 1
+    assert report.days[0].flagged == 2
+    assert report.days[0].status == "partial"
+    assert report.days[0].label() == "1✓ 2·"
+    assert report.complete_events == 1
+    assert report.flagged_events == 2
+    assert "1 complete" in summarize_report(report)
+    assert "2 flagged" in summarize_report(report)
+    connection.close()
+
+
+def test_full_day_with_flags_is_green() -> None:
+    connection = connect(":memory:")
+    initialize_schema(connection)
+    events = [
+        _event(
+            datetime(2099, 4, 1, hour, tzinfo=timezone.utc),
+            ticker=f"KXBTC-99APR01{hour:02d}",
+        )
+        for hour in range(20)
+    ] + [
+        no_markets_event(
+            f"KXBTC-99APR01{hour:02d}",
+            datetime(2099, 4, 1, hour, tzinfo=timezone.utc),
+        )
+        for hour in range(20, 24)
+    ]
+    store_settled_events(connection, events)
+    report = load_coverage(connection)
+    assert report.days[0].status == "full"
+    assert report.days[0].complete == 20
+    assert report.days[0].flagged == 4
+    assert report.days[0].label() == "20✓ 4·"
+    assert report.unknown_events == 0
     connection.close()
 
 
