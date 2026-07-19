@@ -207,9 +207,7 @@ def test_run_backfill_skips_full_day_already_stored(
         key=lambda value: value.timestamp(),
     ):
         # Only seed hours that are expected KXBTC closes in range.
-        if kxbtc_event_ticker(ticker_close) in expected_kxbtc_event_tickers(
-            start, end
-        ):
+        if kxbtc_event_ticker(ticker_close) in expected_kxbtc_event_tickers(start, end):
             _seed_event(connection, ticker_close)
     seed_complete_candle_hours(connection, start, end)
 
@@ -319,9 +317,7 @@ def test_run_backfill_fetches_only_missing_hour(
     connection.close()
 
 
-def test_run_backfill_force_refetches(
-    tmp_path: Path, kalshi_credentials
-) -> None:
+def test_run_backfill_force_refetches(tmp_path: Path, kalshi_credentials) -> None:
     start = datetime(2099, 4, 1, tzinfo=timezone.utc)
     end = datetime(2099, 4, 1, 1, tzinfo=timezone.utc)
     connection = connect(tmp_path / "force.sqlite")
@@ -523,9 +519,7 @@ def test_cli_backfill_mocked(
     )
     assert f"stored {expected} events, 2 brackets, 0 candles" in result.output
     assert "ETA 0s" in result.output
-    assert (
-        f"done  {expected} events, 2 brackets, 0 candles" in result.output
-    )
+    assert f"done  {expected} events, 2 brackets, 0 candles" in result.output
 
 
 def test_cli_backfill_collapses_skip_days(
@@ -578,3 +572,11 @@ def test_cli_backfill_collapses_skip_days(
     assert "skipped 2 days (24 hours already stored)" in result.output
     assert "done  0 events, 0 brackets, 0 candles" in result.output
     assert "[1/" not in result.output
+
+
+def test_research_commands_registered(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("bob.cli.require_gate", lambda: None)
+    result = runner.invoke(app, ["research", "--help"])
+    assert result.exit_code == 0
+    for name in ("s1", "s2", "s3", "s4", "s5", "s6", "s7"):
+        assert name in result.output

@@ -46,19 +46,8 @@ from bob.kalshi import (
     load_dotenv,
     require_kalshi_credentials,
 )
-from bob.research.s1 import (
-    DEFAULT_CHECKPOINT_MINUTES as S1_DEFAULT_MINUTES,
-    STRATEGY as S1_STRATEGY,
-    STRATEGY_SUMMARY as S1_SUMMARY,
-    Side,
-    evaluate as evaluate_s1,
-)
-from bob.research.s2 import (
-    DEFAULT_CHECKPOINT_MINUTES as S2_DEFAULT_MINUTES,
-    STRATEGY as S2_STRATEGY,
-    STRATEGY_SUMMARY as S2_SUMMARY,
-    evaluate as evaluate_s2,
-)
+from bob.research import s1, s2, s3, s4, s5, s6, s7
+from bob.research.s1 import Side
 
 DEFAULT_DB = Path("data/bob.sqlite")
 
@@ -69,7 +58,7 @@ app = typer.Typer(
 research_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
-    help="Offline outcome-accuracy studies (named strategies: s1, s2, …).",
+    help="Offline outcome-accuracy studies (named strategies: s1–s7).",
 )
 app.add_typer(research_app, name="research")
 console = Console(stderr=True)
@@ -590,127 +579,120 @@ def _research_common_options(
         raise typer.Exit(code=2) from exc
 
 
-@research_app.command(S1_STRATEGY)
-def research_s1(
-    db: Annotated[
-        Path,
-        typer.Option(help="SQLite path."),
-    ] = DEFAULT_DB,
-    minutes: Annotated[
-        str,
-        typer.Option(
-            help="Comma-separated minutes into the hour (1..59).",
-        ),
-    ] = ",".join(str(m) for m in S1_DEFAULT_MINUTES),
-    side: Annotated[
-        Side,
-        typer.Option(
-            help="Buy YES or NO on the current bracket.",
-            parser=parse_side,
-            metavar="yes|no",
-        ),
-    ] = "yes",
-    start: Annotated[
-        datetime | None,
-        typer.Option(
-            help="UTC start of event close_ts range [start, end).",
-            parser=parse_iso_datetime,
-            metavar="ISO",
-        ),
-    ] = None,
-    end: Annotated[
-        datetime | None,
-        typer.Option(
-            help="UTC end of event close_ts range [start, end).",
-            parser=parse_iso_datetime,
-            metavar="ISO",
-        ),
-    ] = None,
+def _register_research_strategy(
+    module,
+    *,
+    docstring: str,
+    minutes_help: str,
+    has_abstentions: bool,
 ) -> None:
-    """s1: current-bracket hold-to-settlement outcome accuracy."""
-    require_gate()
-    minute_list = _research_common_options(db, start, end, minutes)
-    connection = connect(db)
-    try:
-        report = evaluate_s1(
-            connection,
-            minutes=minute_list,
-            side=side,
-            start=start,
-            end=end,
-        )
-    finally:
-        connection.close()
-    _print_research_tables(
-        strategy=report.strategy,
-        summary=S1_SUMMARY,
-        side=report.side,
-        minutes=report.minutes,
-    )
+    defaults = ",".join(str(minute) for minute in module.DEFAULT_CHECKPOINT_MINUTES)
 
-
-@research_app.command(S2_STRATEGY)
-def research_s2(
-    db: Annotated[
-        Path,
-        typer.Option(help="SQLite path."),
-    ] = DEFAULT_DB,
-    minutes: Annotated[
-        str,
-        typer.Option(
-            help=(
-                "Comma-separated checkpoint minutes "
-                f"({S2_DEFAULT_MINUTES[0]}..59); uses prior "
-                "4 minutes for stability."
+    def command(
+        db: Annotated[
+            Path,
+            typer.Option(help="SQLite path."),
+        ] = DEFAULT_DB,
+        minutes: Annotated[
+            str,
+            typer.Option(help=minutes_help),
+        ] = defaults,
+        side: Annotated[
+            Side,
+            typer.Option(
+                help="Buy YES or NO on the selected bracket.",
+                parser=parse_side,
+                metavar="yes|no",
             ),
-        ),
-    ] = ",".join(str(m) for m in S2_DEFAULT_MINUTES),
-    side: Annotated[
-        Side,
-        typer.Option(
-            help="Buy YES or NO on the current bracket when not abstaining.",
-            parser=parse_side,
-            metavar="yes|no",
-        ),
-    ] = "yes",
-    start: Annotated[
-        datetime | None,
-        typer.Option(
-            help="UTC start of event close_ts range [start, end).",
-            parser=parse_iso_datetime,
-            metavar="ISO",
-        ),
-    ] = None,
-    end: Annotated[
-        datetime | None,
-        typer.Option(
-            help="UTC end of event close_ts range [start, end).",
-            parser=parse_iso_datetime,
-            metavar="ISO",
-        ),
-    ] = None,
-) -> None:
-    """s2: stable-center current-bracket hold-to-settlement accuracy."""
-    require_gate()
-    minute_list = _research_common_options(db, start, end, minutes)
-    connection = connect(db)
-    try:
-        report = evaluate_s2(
-            connection,
-            minutes=minute_list,
-            side=side,
-            start=start,
-            end=end,
+        ] = "yes",
+        start: Annotated[
+            datetime | None,
+            typer.Option(
+                help="UTC start of event close_ts range [start, end).",
+                parser=parse_iso_datetime,
+                metavar="ISO",
+            ),
+        ] = None,
+        end: Annotated[
+            datetime | None,
+            typer.Option(
+                help="UTC end of event close_ts range [start, end).",
+                parser=parse_iso_datetime,
+                metavar="ISO",
+            ),
+        ] = None,
+    ) -> None:
+        require_gate()
+        minute_list = _research_common_options(db, start, end, minutes)
+        connection = connect(db)
+        try:
+            report = module.evaluate(
+                connection,
+                minutes=minute_list,
+                side=side,
+                start=start,
+                end=end,
+            )
+        finally:
+            connection.close()
+        _print_research_tables(
+            strategy=report.strategy,
+            summary=module.STRATEGY_SUMMARY,
+            side=report.side,
+            minutes=report.minutes,
+            abstention_attr="abstained" if has_abstentions else None,
         )
-    finally:
-        connection.close()
-    _print_research_tables(
-        strategy=report.strategy,
-        summary=S2_SUMMARY,
-        side=report.side,
-        minutes=report.minutes,
-        abstention_attr="abstained",
-    )
+
+    command.__doc__ = docstring
+    command.__name__ = f"research_{module.STRATEGY}"
+    research_app.command(module.STRATEGY)(command)
+
+
+_register_research_strategy(
+    s1,
+    docstring="s1: current-bracket hold-to-settlement outcome accuracy.",
+    minutes_help="Comma-separated minutes into the hour (1..59).",
+    has_abstentions=False,
+)
+_register_research_strategy(
+    s2,
+    docstring="s2: stable-center current-bracket hold-to-settlement accuracy.",
+    minutes_help=(
+        "Comma-separated checkpoint minutes (5..59); uses prior "
+        "4 minutes for stability."
+    ),
+    has_abstentions=True,
+)
+_register_research_strategy(
+    s3,
+    docstring="s3: linear-trend projected bracket hold-to-settlement accuracy.",
+    minutes_help="Comma-separated checkpoint minutes (10..59).",
+    has_abstentions=True,
+)
+_register_research_strategy(
+    s4,
+    docstring="s4: half-reversion to hourly open hold-to-settlement accuracy.",
+    minutes_help="Comma-separated checkpoint minutes (1..59).",
+    has_abstentions=True,
+)
+_register_research_strategy(
+    s5,
+    docstring="s5: volatility-buffered current-bracket hold accuracy.",
+    minutes_help="Comma-separated checkpoint minutes (11..59).",
+    has_abstentions=True,
+)
+_register_research_strategy(
+    s6,
+    docstring="s6: directed adjacent-bracket breakout hold accuracy.",
+    minutes_help="Comma-separated checkpoint minutes (3..59).",
+    has_abstentions=True,
+)
+_register_research_strategy(
+    s7,
+    docstring="s7: dominant-bracket occupancy hold-to-settlement accuracy.",
+    minutes_help="Comma-separated checkpoint minutes (1..59).",
+    has_abstentions=True,
+)
 
 
 def main() -> None:
