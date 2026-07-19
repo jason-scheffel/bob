@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Jason Scheffel <contact@jasonscheffel.com>
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import os
+import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
@@ -251,6 +254,42 @@ def backfill(
     console.print(
         f"done  {counts.events} events, {counts.brackets} brackets"
     )
+
+
+def run_streamlit(db: Path) -> int:
+    """Launch the local Streamlit coverage/browse UI for ``db``."""
+    script = Path(__file__).resolve().parent / "web_app.py"
+    env = os.environ.copy()
+    env["BOB_DB"] = str(db.resolve())
+    return subprocess.call(
+        [
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
+            str(script),
+            "--server.address",
+            "127.0.0.1",
+            "--browser.gatherUsageStats",
+            "false",
+        ],
+        env=env,
+    )
+
+
+@app.command()
+def viz(
+    db: Annotated[
+        Path,
+        typer.Option(help="SQLite path."),
+    ] = DEFAULT_DB,
+) -> None:
+    """Open a local Streamlit UI for coverage and settled-event browse."""
+    require_gate()
+    if not db.is_file():
+        console.print(f"[red]Error:[/red] database not found: {db}")
+        raise typer.Exit(code=2)
+    raise typer.Exit(code=run_streamlit(db))
 
 
 def main() -> None:
