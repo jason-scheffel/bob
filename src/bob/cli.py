@@ -46,7 +46,7 @@ from bob.kalshi import (
     load_dotenv,
     require_kalshi_credentials,
 )
-from bob.research import s1, s2, s3, s4, s5, s6, s7, s8, s9
+from bob.research import s1, s2, s3, s4, s5, s6, s7, s8, s9, s10
 from bob.research.s1 import Side
 
 DEFAULT_DB = Path("data/bob.sqlite")
@@ -58,7 +58,7 @@ app = typer.Typer(
 research_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
-    help="Offline outcome-accuracy studies (named strategies: s1–s9).",
+    help="Offline outcome-accuracy studies (named strategies: s1–s10).",
 )
 app.add_typer(research_app, name="research")
 console = Console(stderr=True)
@@ -702,6 +702,12 @@ _register_research_strategy(
 _register_research_strategy(
     s9,
     docstring="s9: matched-horizon excursion-buffered hold accuracy.",
+    minutes_help="Comma-separated checkpoint minutes (30..59).",
+    has_abstentions=True,
+)
+_register_research_strategy(
+    s10,
+    docstring="s10: majority-range-persistent current-bracket hold accuracy.",
     minutes_help="Comma-separated checkpoint minutes (30..59).",
     has_abstentions=True,
 )
