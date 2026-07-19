@@ -18,7 +18,13 @@ from bob.browse import (
     winning_bracket,
 )
 from bob.cli import app
-from bob.db import connect, initialize_schema, store_settled_events
+from bob.db import (
+    MinuteBar,
+    connect,
+    initialize_schema,
+    store_btc_candles,
+    store_settled_events,
+)
 from bob.kalshi import (
     STATUS_COMPLETE,
     STATUS_MISSING_EXPIRATION,
@@ -96,7 +102,9 @@ def test_load_coverage_full_partial_and_gap() -> None:
         "2099-04-02",
         "2099-04-03",
     ]
-    assert report.days[0].status == "full"
+    # Events full but no candles → partial (green requires both).
+    assert report.days[0].status == "partial"
+    assert report.days[0].candle_hours == 0
     assert report.days[1].status == "empty"
     assert report.days[2].status == "partial"
     connection.close()
@@ -143,8 +151,9 @@ def test_months_from_report_groups_and_status() -> None:
     store_settled_events(connection, events)
     months = months_from_report(load_coverage(connection))
     assert [month.label for month in months] == ["Mar 2099", "Apr 2099"]
-    assert months[0].status == "full"
+    assert months[0].status == "partial"
     assert months[0].covered_events == HOURS_PER_DAY
+    assert months[0].covered_candle_hours == 0
     assert months[1].status == "partial"
     assert months[1].days_with_data == 1
     connection.close()
@@ -170,7 +179,8 @@ def test_overall_fraction_caps_per_day() -> None:
     report = load_coverage(connection)
     assert report.total_events == 48
     assert report.covered_events == 47
-    assert report.overall_fraction == 47 / 48
+    # No candles → combined fraction is half the event fraction.
+    assert report.overall_fraction == (47 / 48) / 2
     connection.close()
 
 
@@ -210,7 +220,7 @@ def test_load_coverage_counts_any_status() -> None:
     assert report.days[0].complete == 1
     assert report.days[0].flagged == 2
     assert report.days[0].status == "partial"
-    assert report.days[0].label() == "1✓ 2·"
+    assert report.days[0].label() == "1✓ 2· / 0c"
     assert report.complete_events == 1
     assert report.flagged_events == 2
     assert "1 complete" in summarize_report(report)
@@ -218,7 +228,28 @@ def test_load_coverage_counts_any_status() -> None:
     connection.close()
 
 
-def test_full_day_with_flags_is_green() -> None:
+def _seed_candle_hours(connection, day: date, hours: range) -> None:
+    bars: list[MinuteBar] = []
+    for hour in hours:
+        hour_start = int(
+            datetime(
+                day.year, day.month, day.day, hour, tzinfo=timezone.utc
+            ).timestamp()
+        )
+        for offset in range(1, 61):
+            bars.append(
+                MinuteBar(
+                    end_ts=hour_start + offset * 60,
+                    open="1",
+                    high="1",
+                    low="1",
+                    close="1",
+                )
+            )
+    store_btc_candles(connection, bars)
+
+
+def test_full_day_with_flags_needs_candles_for_green() -> None:
     connection = connect(":memory:")
     initialize_schema(connection)
     events = [
@@ -236,11 +267,30 @@ def test_full_day_with_flags_is_green() -> None:
     ]
     store_settled_events(connection, events)
     report = load_coverage(connection)
-    assert report.days[0].status == "full"
+    assert report.days[0].status == "partial"
     assert report.days[0].complete == 20
     assert report.days[0].flagged == 4
-    assert report.days[0].label() == "20✓ 4·"
+    assert report.days[0].label() == "20✓ 4· / 0c"
     assert report.unknown_events == 0
+
+    _seed_candle_hours(connection, date(2099, 4, 1), range(24))
+    report = load_coverage(connection)
+    assert report.days[0].candle_hours == 24
+    assert report.days[0].status == "full"
+    assert report.days[0].label() == "20✓ 4· / 24c"
+    connection.close()
+
+
+def test_load_coverage_candle_only_day() -> None:
+    connection = connect(":memory:")
+    initialize_schema(connection)
+    _seed_candle_hours(connection, date(2099, 5, 1), range(12))
+    report = load_coverage(connection)
+    assert [day.day.isoformat() for day in report.days] == ["2099-05-01"]
+    assert report.days[0].events == 0
+    assert report.days[0].candle_hours == 12
+    assert report.days[0].status == "partial"
+    assert report.days[0].label() == "0✓ / 12c"
     connection.close()
 
 

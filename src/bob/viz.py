@@ -16,10 +16,11 @@ class DayCoverage:
     day: date
     complete: int
     flagged: int
+    candle_hours: int = 0
 
     @property
     def events(self) -> int:
-        """Accounted hours (any status)."""
+        """Accounted event hours (any status)."""
         return self.complete + self.flagged
 
     @property
@@ -32,18 +33,21 @@ class DayCoverage:
 
     @property
     def status(self) -> str:
-        """Color status from accounted hours, not usable BTC prints."""
-        if self.events <= 0:
+        """Green only when both events and candles are fully accounted."""
+        if self.events <= 0 and self.candle_hours <= 0:
             return "empty"
-        if self.events >= self.expected:
+        events_full = self.events >= self.expected
+        candles_full = self.candle_hours >= self.expected
+        if events_full and candles_full:
             return "full"
         return "partial"
 
     def label(self) -> str:
-        """Short cell label: complete✓ and flagged· when present."""
+        """Short cell label: events then complete candle hours."""
         body = f"{self.complete}✓"
         if self.flagged:
             body += f" {self.flagged}·"
+        body += f" / {self.candle_hours}c"
         return body
 
 
@@ -62,11 +66,19 @@ class CoverageReport:
 
     @property
     def days_with_data(self) -> int:
-        return sum(1 for day in self.days if day.events > 0)
+        return sum(
+            1
+            for day in self.days
+            if day.events > 0 or day.candle_hours > 0
+        )
 
     @property
     def missing_days(self) -> int:
-        return sum(1 for day in self.days if day.events <= 0)
+        return sum(
+            1
+            for day in self.days
+            if day.events <= 0 and day.candle_hours <= 0
+        )
 
     @property
     def expected_events(self) -> int:
@@ -74,7 +86,7 @@ class CoverageReport:
 
     @property
     def covered_events(self) -> int:
-        """Accounted hours toward coverage, capped at 24 per day."""
+        """Accounted event hours toward coverage, capped at 24 per day."""
         return sum(min(day.events, day.expected) for day in self.days)
 
     @property
@@ -86,14 +98,29 @@ class CoverageReport:
         return sum(day.flagged for day in self.days)
 
     @property
+    def candle_hours(self) -> int:
+        return sum(day.candle_hours for day in self.days)
+
+    @property
+    def covered_candle_hours(self) -> int:
+        return sum(min(day.candle_hours, day.expected) for day in self.days)
+
+    @property
     def unknown_events(self) -> int:
         return max(0, self.expected_events - self.covered_events)
 
     @property
+    def unknown_candle_hours(self) -> int:
+        return max(0, self.expected_events - self.covered_candle_hours)
+
+    @property
     def overall_fraction(self) -> float:
+        """Mean of event and candle accounted fractions."""
         if self.expected_events == 0:
             return 0.0
-        return self.covered_events / self.expected_events
+        event_frac = self.covered_events / self.expected_events
+        candle_frac = self.covered_candle_hours / self.expected_events
+        return (event_frac + candle_frac) / 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,11 +135,19 @@ class MonthCoverage:
 
     @property
     def days_with_data(self) -> int:
-        return sum(1 for day in self.days if day.events > 0)
+        return sum(
+            1
+            for day in self.days
+            if day.events > 0 or day.candle_hours > 0
+        )
 
     @property
     def missing_days(self) -> int:
-        return sum(1 for day in self.days if day.events <= 0)
+        return sum(
+            1
+            for day in self.days
+            if day.events <= 0 and day.candle_hours <= 0
+        )
 
     @property
     def expected_events(self) -> int:
@@ -131,38 +166,75 @@ class MonthCoverage:
         return sum(day.flagged for day in self.days)
 
     @property
+    def candle_hours(self) -> int:
+        return sum(day.candle_hours for day in self.days)
+
+    @property
+    def covered_candle_hours(self) -> int:
+        return sum(min(day.candle_hours, day.expected) for day in self.days)
+
+    @property
     def overall_fraction(self) -> float:
         if self.expected_events == 0:
             return 0.0
-        return self.covered_events / self.expected_events
+        event_frac = self.covered_events / self.expected_events
+        candle_frac = self.covered_candle_hours / self.expected_events
+        return (event_frac + candle_frac) / 2.0
 
     @property
     def status(self) -> str:
-        if not self.days or self.covered_events <= 0:
+        if not self.days or (
+            self.covered_events <= 0 and self.covered_candle_hours <= 0
+        ):
             return "empty"
-        if self.covered_events >= self.expected_events:
+        if (
+            self.covered_events >= self.expected_events
+            and self.covered_candle_hours >= self.expected_events
+        ):
             return "full"
         return "partial"
 
 
-def load_coverage(connection: sqlite3.Connection) -> CoverageReport:
+def _complete_candle_hours_by_day(
+    connection: sqlite3.Connection,
+) -> dict[date, int]:
+    """Count UTC hours with all 60 minute bars present."""
     rows = connection.execute(
+        """
+        SELECT ((end_ts - 1) / 3600) * 3600 AS hour_start, COUNT(*) AS n
+        FROM btc_candles
+        GROUP BY hour_start
+        HAVING n = 60
+        """
+    ).fetchall()
+    by_day: dict[date, int] = defaultdict(int)
+    for hour_start, _count in rows:
+        day = datetime.fromtimestamp(int(hour_start), tz=timezone.utc).date()
+        by_day[day] += 1
+    return by_day
+
+
+def load_coverage(connection: sqlite3.Connection) -> CoverageReport:
+    event_rows = connection.execute(
         "SELECT close_ts, status FROM events ORDER BY close_ts"
     ).fetchall()
-    if not rows:
-        return CoverageReport(days=(), total_events=0)
+    candle_by_day = _complete_candle_hours_by_day(connection)
 
     complete: dict[date, int] = defaultdict(int)
     flagged: dict[date, int] = defaultdict(int)
-    for close_ts, status in rows:
+    for close_ts, status in event_rows:
         day = datetime.fromtimestamp(int(close_ts), tz=timezone.utc).date()
         if status == STATUS_COMPLETE:
             complete[day] += 1
         else:
             flagged[day] += 1
 
-    first = min(complete.keys() | flagged.keys())
-    last = max(complete.keys() | flagged.keys())
+    days_present = set(complete) | set(flagged) | set(candle_by_day)
+    if not days_present:
+        return CoverageReport(days=(), total_events=0)
+
+    first = min(days_present)
+    last = max(days_present)
     days: list[DayCoverage] = []
     cursor = first
     while cursor <= last:
@@ -171,6 +243,7 @@ def load_coverage(connection: sqlite3.Connection) -> CoverageReport:
                 day=cursor,
                 complete=complete.get(cursor, 0),
                 flagged=flagged.get(cursor, 0),
+                candle_hours=candle_by_day.get(cursor, 0),
             )
         )
         cursor += timedelta(days=1)
@@ -216,12 +289,13 @@ def months_from_report(report: CoverageReport) -> tuple[MonthCoverage, ...]:
 
 def summarize_report(report: CoverageReport, *, label: str = "Range") -> str:
     if not report.days:
-        return "No events in selection."
+        return "No events or candles in selection."
     return (
         f"{label}: {report.first_day} → {report.last_day}  ·  "
         f"{report.complete_events} complete  ·  "
         f"{report.flagged_events} flagged  ·  "
         f"{report.unknown_events} unknown  ·  "
-        f"accounted {report.covered_events}/{report.expected_events} "
-        f"({report.overall_fraction:.0%})"
+        f"candles {report.covered_candle_hours}/{report.expected_events}  ·  "
+        f"accounted {report.covered_events}/{report.expected_events} events  ·  "
+        f"combined {report.overall_fraction:.0%}"
     )

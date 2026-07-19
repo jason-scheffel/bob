@@ -103,7 +103,7 @@ def _style_months_table(frame: pd.DataFrame, months: tuple[MonthCoverage, ...]):
 
 def _coverage_tab(report: CoverageReport) -> None:
     if not report.days:
-        st.info("No events in the database.")
+        st.info("No events or candles in the database.")
         return
 
     col_a, col_b = st.columns(2)
@@ -137,9 +137,9 @@ def _coverage_tab(report: CoverageReport) -> None:
     else:
         _show_days(selected)
     st.caption(
-        "Color = accounted hours (any status). "
-        "✓ complete, · flagged (no market / blank settle). "
-        "Green = full, yellow = partial, red = empty"
+        "Cell: events then candles (e.g. 20✓ 4· / 22c). "
+        "✓ complete event, · flagged event, c = hours with all 60 BRTI minutes. "
+        "Green = events and candles both full, yellow = partial, red = empty"
         + (", gray = outside DB span" if level == "Days" else "")
         + "."
     )
@@ -158,8 +158,11 @@ def _show_months(report: CoverageReport) -> None:
                 "empty_days": month.missing_days,
                 "complete": month.complete_events,
                 "flagged": month.flagged_events,
-                "accounted": (
+                "events": (
                     f"{month.covered_events}/{month.expected_events}"
+                ),
+                "candles": (
+                    f"{month.covered_candle_hours}/{month.expected_events}"
                 ),
                 "coverage": f"{month.overall_fraction:.0%}",
                 "status": month.status,
