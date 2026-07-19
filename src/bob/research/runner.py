@@ -14,11 +14,12 @@ from pathlib import Path
 from typing import Any
 
 from bob.db import connect, connect_readonly
-from bob.research import s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13
+from bob.research import s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14
 from bob.research.pnl import QuoteSimReport, score_trades, score_trades_by_minute
 from bob.research.s1 import Side
 from bob.research.s12 import DEFAULT_TAU
 from bob.research.s13 import DEFAULT_P_STAR
+from bob.research.s14 import DEFAULT_Q_STAR
 
 STRATEGY_MODULES = {
     "s1": s1,
@@ -34,6 +35,7 @@ STRATEGY_MODULES = {
     "s11": s11,
     "s12": s12,
     "s13": s13,
+    "s14": s14,
 }
 
 STRATEGY_NAMES = tuple(STRATEGY_MODULES)
@@ -72,6 +74,7 @@ def evaluate_strategy(
     end: datetime | None = None,
     tau: Decimal = DEFAULT_TAU,
     p_star: Decimal = DEFAULT_P_STAR,
+    q_star: Decimal = DEFAULT_Q_STAR,
 ) -> Any:
     module = STRATEGY_MODULES[name]
     kwargs: dict[str, Any] = {
@@ -84,6 +87,9 @@ def evaluate_strategy(
         kwargs["tau"] = tau
     if name == "s13":
         kwargs["p_star"] = p_star
+    if name == "s14":
+        kwargs["p_star"] = p_star
+        kwargs["q_star"] = q_star
     return module.evaluate(connection, **kwargs)
 
 
@@ -121,6 +127,7 @@ def run_strategy_on_db(
     end: datetime | None = None,
     tau: Decimal = DEFAULT_TAU,
     p_star: Decimal = DEFAULT_P_STAR,
+    q_star: Decimal = DEFAULT_Q_STAR,
     readonly: bool = False,
 ) -> StrategySummary:
     module = STRATEGY_MODULES[name]
@@ -135,6 +142,7 @@ def run_strategy_on_db(
             end=end,
             tau=tau,
             p_star=p_star,
+            q_star=q_star,
         )
     finally:
         connection.close()
@@ -151,6 +159,7 @@ def run_strategy_pnl_on_db(
     end: datetime | None = None,
     tau: Decimal = DEFAULT_TAU,
     p_star: Decimal = DEFAULT_P_STAR,
+    q_star: Decimal = DEFAULT_Q_STAR,
     readonly: bool = False,
 ) -> StrategyPnlSummary:
     module = STRATEGY_MODULES[name]
@@ -165,6 +174,7 @@ def run_strategy_pnl_on_db(
             end=end,
             tau=tau,
             p_star=p_star,
+            q_star=q_star,
         )
         pnl = score_trades(connection, report.trades)
         by_minute = score_trades_by_minute(connection, report.trades, minutes)
@@ -189,6 +199,7 @@ def run_all_strategies(
     end: datetime | None = None,
     tau: Decimal = DEFAULT_TAU,
     p_star: Decimal = DEFAULT_P_STAR,
+    q_star: Decimal = DEFAULT_Q_STAR,
     workers: int | None = None,
     names: Sequence[str] = STRATEGY_NAMES,
 ) -> tuple[StrategySummary, ...]:
@@ -215,6 +226,7 @@ def run_all_strategies(
         "end": end,
         "tau": tau,
         "p_star": p_star,
+        "q_star": q_star,
     }
     results: dict[str, StrategySummary] = {}
     with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -236,6 +248,7 @@ def run_all_strategy_pnl(
     end: datetime | None = None,
     tau: Decimal = DEFAULT_TAU,
     p_star: Decimal = DEFAULT_P_STAR,
+    q_star: Decimal = DEFAULT_Q_STAR,
     workers: int | None = None,
     names: Sequence[str] = STRATEGY_NAMES,
 ) -> tuple[StrategyPnlSummary, ...]:
@@ -261,6 +274,7 @@ def run_all_strategy_pnl(
         "end": end,
         "tau": tau,
         "p_star": p_star,
+        "q_star": q_star,
     }
     results: dict[str, StrategyPnlSummary] = {}
     with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -283,6 +297,7 @@ def _worker_strategy(name: str, payload: dict[str, Any]) -> StrategySummary:
         end=payload["end"],
         tau=payload["tau"],
         p_star=payload["p_star"],
+        q_star=payload["q_star"],
         readonly=True,
     )
 
@@ -297,5 +312,6 @@ def _worker_pnl(name: str, payload: dict[str, Any]) -> StrategyPnlSummary:
         end=payload["end"],
         tau=payload["tau"],
         p_star=payload["p_star"],
+        q_star=payload["q_star"],
         readonly=True,
     )

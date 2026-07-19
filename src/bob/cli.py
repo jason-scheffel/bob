@@ -52,12 +52,13 @@ from bob.kalshi import (
     require_kalshi_credentials,
 )
 from bob.market_candles import run_backfill_market_candles
-from bob.research import s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13
+from bob.research import s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14
 from bob.research.pnl import score_trades_by_minute
 from bob.research.runner import run_all_strategy_pnl
 from bob.research.s1 import Side
 from bob.research.s12 import DEFAULT_TAU
 from bob.research.s13 import DEFAULT_P_STAR
+from bob.research.s14 import DEFAULT_Q_STAR
 
 DEFAULT_DB = Path("data/bob.sqlite")
 
@@ -68,7 +69,7 @@ app = typer.Typer(
 research_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
-    help="Offline quote-sim research (named strategies: s1–s13).",
+    help="Offline quote-sim research (named strategies: s1–s14).",
 )
 app.add_typer(research_app, name="research")
 console = Console(stderr=True)
@@ -1033,6 +1034,89 @@ def research_s13(
     )
 
 
+@research_app.command("s14")
+def research_s14(
+    db: Annotated[
+        Path,
+        typer.Option(help="SQLite path."),
+    ] = DEFAULT_DB,
+    minutes: Annotated[
+        str,
+        typer.Option(help="Comma-separated checkpoint minutes (35..59)."),
+    ] = ",".join(str(minute) for minute in s14.DEFAULT_CHECKPOINT_MINUTES),
+    side: Annotated[
+        Side,
+        typer.Option(
+            help="Buy YES or NO on the selected bracket.",
+            parser=parse_side,
+            metavar="yes|no",
+        ),
+    ] = "yes",
+    p_star: Annotated[
+        Decimal,
+        typer.Option(
+            "--p-star",
+            help="Trade when recent-clock terminal p̂ ≥ p-star.",
+            parser=parse_tau,
+            metavar="0..1",
+        ),
+    ] = DEFAULT_P_STAR,
+    q_star: Annotated[
+        Decimal,
+        typer.Option(
+            "--q-star",
+            help="Abstain when whole-hour-clock terminal p̂ > q-star.",
+            parser=parse_tau,
+            metavar="0..1",
+        ),
+    ] = DEFAULT_Q_STAR,
+    start: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC start of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC end of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+) -> None:
+    """s14: two-clock vol-disagreement current-bracket hold (quote-sim)."""
+    require_gate()
+    minute_list = _research_common_options(db, start, end, minutes)
+    connection = connect(db)
+    try:
+        report = s14.evaluate(
+            connection,
+            minutes=minute_list,
+            side=side,
+            p_star=p_star,
+            q_star=q_star,
+            start=start,
+            end=end,
+        )
+        by_minute = score_trades_by_minute(connection, report.trades, minute_list)
+    finally:
+        connection.close()
+    _print_research_tables(
+        strategy=report.strategy,
+        summary=(
+            f"{s14.STRATEGY_SUMMARY} · p_star={report.p_star} · "
+            f"q_star={report.q_star}"
+        ),
+        side=report.side,
+        by_minute=by_minute,
+        outcome_minutes=report.minutes,
+        abstention_attr="abstained",
+    )
+
+
 def _print_all_research_table(summaries) -> None:
     minutes = []
     for item in summaries:
@@ -1113,11 +1197,20 @@ def research_all(
         Decimal,
         typer.Option(
             "--p-star",
-            help="s13 only: trade when terminal p̂ ≥ p-star.",
+            help="s13/s14: quality bar on terminal p̂ (recent clock for s14).",
             parser=parse_tau,
             metavar="0..1",
         ),
     ] = DEFAULT_P_STAR,
+    q_star: Annotated[
+        Decimal,
+        typer.Option(
+            "--q-star",
+            help="s14 only: abstain when whole-hour-clock p̂ > q-star.",
+            parser=parse_tau,
+            metavar="0..1",
+        ),
+    ] = DEFAULT_Q_STAR,
     start: Annotated[
         datetime | None,
         typer.Option(
@@ -1136,10 +1229,10 @@ def research_all(
     ] = None,
     workers: Annotated[
         int | None,
-        typer.Option(help="Process pool size (default: min(13, CPUs))."),
+        typer.Option(help="Process pool size (default: min(14, CPUs))."),
     ] = None,
 ) -> None:
-    """Run s1–s13 quote-sim in parallel; one table per checkpoint minute."""
+    """Run s1–s14 quote-sim in parallel; one table per checkpoint minute."""
     require_gate()
     minute_list = _research_common_options(db, start, end, minutes)
     _validate_minutes_for_all(minute_list)
@@ -1156,6 +1249,7 @@ def research_all(
             end=end,
             tau=tau,
             p_star=p_star,
+            q_star=q_star,
             workers=workers,
         )
     except Exception as exc:
