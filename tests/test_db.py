@@ -7,10 +7,17 @@ from decimal import Decimal
 import pytest
 
 from bob.db import (
+    SCHEMA_VERSION,
+    MinuteBar,
+    candle_in_event_window,
     connect,
     event_tickers_in_close_range,
     existing_event_tickers,
+    hour_has_complete_minutes,
+    hour_is_provisional,
+    hours_needing_candles,
     initialize_schema,
+    store_btc_candles,
     store_settled_events,
 )
 from bob.kalshi import (
@@ -262,17 +269,52 @@ def _seed_v1_schema(connection) -> None:
     connection.commit()
 
 
-def test_migrate_v1_to_v2() -> None:
+def test_fresh_schema_is_v3(db) -> None:
+    assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert SCHEMA_VERSION == 3
+    tables = {
+        row[0]
+        for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    assert "btc_candles" in tables
+
+
+def test_migrate_v1_to_v3() -> None:
     connection = connect(":memory:")
     _seed_v1_schema(connection)
 
     initialize_schema(connection)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
     assert connection.execute(
         "SELECT status, expiration_value FROM events WHERE event_ticker = ?",
         ("KXBTC-99APR0100",),
     ).fetchone() == (STATUS_COMPLETE, "420.69")
     assert connection.execute("SELECT COUNT(*) FROM brackets").fetchone()[0] == 1
+    assert connection.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE name = 'btc_candles'"
+    ).fetchone()[0] == 1
+    connection.close()
+
+
+def _seed_v2_schema(connection) -> None:
+    initialize_schema(connection)
+    # Downgrade marker after creating v3, then rebuild as v2-only.
+    connection.execute("DROP TABLE btc_candles")
+    connection.execute("PRAGMA user_version = 2")
+    connection.commit()
+
+
+def test_migrate_v2_to_v3() -> None:
+    connection = connect(":memory:")
+    _seed_v2_schema(connection)
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    initialize_schema(connection)
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert connection.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE name = 'btc_candles'"
+    ).fetchone()[0] == 1
     connection.close()
 
 
@@ -400,3 +442,103 @@ def test_foreign_keys_and_cascade(db) -> None:
     db.execute("DELETE FROM events WHERE event_ticker = ?", ("KXBTC-99APR0100",))
     db.commit()
     assert db.execute("SELECT COUNT(*) FROM brackets").fetchone()[0] == 0
+
+
+def test_store_btc_candles_upsert(db) -> None:
+    end_ts = 1_700_000_060 - (1_700_000_060 % 60)
+    written = store_btc_candles(
+        db,
+        [
+            MinuteBar(
+                end_ts=end_ts,
+                open="1",
+                high="3",
+                low="0.5",
+                close="2",
+            )
+        ],
+    )
+    assert written == 1
+    store_btc_candles(
+        db,
+        [
+            MinuteBar(
+                end_ts=end_ts,
+                open="10",
+                high="30",
+                low="5",
+                close="20",
+            )
+        ],
+    )
+    assert db.execute(
+        "SELECT open, high, low, close FROM btc_candles WHERE end_ts = ?",
+        (end_ts,),
+    ).fetchone() == ("10", "30", "5", "20")
+
+
+def test_candle_in_event_window() -> None:
+    close_ts = 1_700_003_600
+    assert candle_in_event_window(close_ts - 3600 + 60, close_ts)
+    assert candle_in_event_window(close_ts, close_ts)
+    assert not candle_in_event_window(close_ts - 3600, close_ts)
+    assert not candle_in_event_window(close_ts + 60, close_ts)
+
+
+def test_hours_needing_candles_skip_complete_final(db) -> None:
+    hour = datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2024, 1, 1, 1, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 1, 2, 0, tzinfo=timezone.utc)
+    assert hours_needing_candles(db, hour, end, now=now) == [hour]
+    store_btc_candles(
+        db,
+        [
+            MinuteBar(
+                end_ts=int(hour.timestamp()) + 60 * i,
+                open="1",
+                high="1",
+                low="1",
+                close="1",
+            )
+            for i in range(1, 61)
+        ],
+    )
+    assert hour_has_complete_minutes(db, hour)
+    assert hours_needing_candles(db, hour, end, now=now) == []
+    assert hours_needing_candles(db, hour, end, force=True, now=now) == [hour]
+
+
+def test_hours_needing_candles_clipped_partial_hour(db) -> None:
+    hour = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2024, 1, 1, 12, 30, tzinfo=timezone.utc)
+    end = datetime(2024, 1, 1, 13, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 1, 14, 0, tzinfo=timezone.utc)
+    assert hours_needing_candles(db, start, end, now=now) == [hour]
+    hour_ts = int(hour.timestamp())
+    # Only the clipped half-hour ends (12:31..13:00) — 30 bars.
+    store_btc_candles(
+        db,
+        [
+            MinuteBar(
+                end_ts=hour_ts + 60 * i,
+                open="1",
+                high="1",
+                low="1",
+                close="1",
+            )
+            for i in range(31, 61)
+        ],
+    )
+    assert hour_has_complete_minutes(db, hour, start=start, end=end)
+    assert not hour_has_complete_minutes(db, hour)
+    assert hours_needing_candles(db, start, end, now=now) == []
+
+
+def test_hour_is_provisional() -> None:
+    hour_end = datetime(2024, 1, 1, 1, 0, tzinfo=timezone.utc)
+    assert hour_is_provisional(
+        hour_end, now=datetime(2024, 1, 1, 1, 10, tzinfo=timezone.utc)
+    )
+    assert not hour_is_provisional(
+        hour_end, now=datetime(2024, 1, 1, 1, 20, tzinfo=timezone.utc)
+    )

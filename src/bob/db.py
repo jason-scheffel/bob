@@ -4,7 +4,7 @@
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from bob.kalshi import (
@@ -14,7 +14,8 @@ from bob.kalshi import (
     SettledEvent,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+CANDLE_LAG_S = 15 * 60
 
 # Stronger observations may replace weaker ones; never the reverse.
 _STATUS_RANK = {
@@ -22,6 +23,16 @@ _STATUS_RANK = {
     STATUS_MISSING_EXPIRATION: 1,
     STATUS_COMPLETE: 2,
 }
+
+_BTC_CANDLES_DDL = """
+CREATE TABLE IF NOT EXISTS btc_candles (
+    end_ts INTEGER PRIMARY KEY CHECK (end_ts % 60 = 0),
+    open TEXT NOT NULL,
+    high TEXT NOT NULL,
+    low TEXT NOT NULL,
+    close TEXT NOT NULL
+);
+"""
 
 _SCHEMA = f"""
 PRAGMA foreign_keys = ON;
@@ -55,6 +66,8 @@ CREATE TABLE IF NOT EXISTS brackets (
 
 CREATE INDEX IF NOT EXISTS brackets_event_idx ON brackets(event_ticker);
 CREATE INDEX IF NOT EXISTS events_close_idx ON events(close_ts);
+
+{_BTC_CANDLES_DDL}
 """
 
 
@@ -62,6 +75,18 @@ CREATE INDEX IF NOT EXISTS events_close_idx ON events(close_ts);
 class StoreCounts:
     events: int
     brackets: int
+    candles: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class MinuteBar:
+    """One UTC minute bar covering ``[end_ts - 60, end_ts)``."""
+
+    end_ts: int
+    open: str
+    high: str
+    low: str
+    close: str
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
@@ -84,12 +109,16 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         )
     if version == SCHEMA_VERSION:
         return
+    if version == 0:
+        connection.executescript(_SCHEMA)
+        connection.execute("PRAGMA user_version = 3")
+        connection.commit()
+        return
     if version == 1:
         _migrate_v1_to_v2(connection)
-        return
-    connection.executescript(_SCHEMA)
-    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-    connection.commit()
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if version == 2:
+        _migrate_v2_to_v3(connection)
 
 
 def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
@@ -172,7 +201,7 @@ def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
                 raise RuntimeError(
                     f"foreign key check failed after migrate: {bad}"
                 )
-            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.execute("PRAGMA user_version = 2")
             connection.execute("COMMIT")
         except Exception:
             connection.execute("ROLLBACK")
@@ -180,6 +209,174 @@ def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
     finally:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.isolation_level = previous_isolation
+
+
+def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
+    previous_isolation = connection.isolation_level
+    connection.isolation_level = None
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS btc_candles (
+                    end_ts INTEGER PRIMARY KEY CHECK (end_ts % 60 = 0),
+                    open TEXT NOT NULL,
+                    high TEXT NOT NULL,
+                    low TEXT NOT NULL,
+                    close TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute("PRAGMA user_version = 3")
+            connection.execute("COMMIT")
+        except Exception:
+            connection.execute("ROLLBACK")
+            raise
+    finally:
+        connection.isolation_level = previous_isolation
+
+
+def candle_in_event_window(end_ts: int, close_ts: int) -> bool:
+    """True when bar ``end_ts`` belongs to the hour ending at ``close_ts``.
+
+    Predicate: ``end_ts > close_ts - 3600 AND end_ts <= close_ts``.
+    """
+    return close_ts - 3600 < end_ts <= close_ts
+
+
+def hour_is_provisional(
+    hour_end: datetime,
+    *,
+    now: datetime | None = None,
+    lag_s: int = CANDLE_LAG_S,
+) -> bool:
+    """Hours whose end is newer than ``now - lag`` are not final yet."""
+    if hour_end.tzinfo is None:
+        raise ValueError(f"hour_end must be timezone-aware: {hour_end!r}")
+    current = now if now is not None else datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError(f"now must be timezone-aware: {current!r}")
+    return current.timestamp() < hour_end.timestamp() + lag_s
+
+
+def expected_minute_ends(
+    hour_start: datetime,
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> list[int]:
+    """Minute ``end_ts`` values needed for ``hour_start``, clipped to ``[start, end)``.
+
+    When ``start``/``end`` are omitted, all 60 ends for the UTC hour are returned.
+    """
+    if hour_start.tzinfo is None:
+        raise ValueError(f"hour_start must be timezone-aware: {hour_start!r}")
+    hour_ts = int(hour_start.astimezone(timezone.utc).timestamp())
+    hour_end_ts = hour_ts + 3600
+    lo = hour_ts if start is None else int(start.astimezone(timezone.utc).timestamp())
+    hi = (
+        hour_end_ts
+        if end is None
+        else int(end.astimezone(timezone.utc).timestamp())
+    )
+    lo = max(lo, hour_ts)
+    hi = min(hi, hour_end_ts)
+    if lo >= hi:
+        return []
+    return [ts for ts in range(hour_ts + 60, hour_end_ts + 1, 60) if lo < ts <= hi]
+
+
+def hour_has_complete_minutes(
+    connection: sqlite3.Connection,
+    hour_start: datetime,
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> bool:
+    """True when every expected minute bar for the (clipped) hour exists."""
+    expected = expected_minute_ends(hour_start, start=start, end=end)
+    if not expected:
+        return True
+    placeholders = ",".join("?" * len(expected))
+    count = connection.execute(
+        f"""
+        SELECT COUNT(*) FROM btc_candles
+        WHERE end_ts IN ({placeholders})
+        """,
+        expected,
+    ).fetchone()[0]
+    return count == len(expected)
+
+
+def utc_hour_starts(start: datetime, end: datetime) -> list[datetime]:
+    """UTC hour starts that overlap half-open ``[start, end)``."""
+    if start.tzinfo is None or end.tzinfo is None:
+        raise ValueError("start and end must be timezone-aware")
+    start_utc = start.astimezone(timezone.utc)
+    end_utc = end.astimezone(timezone.utc)
+    if start_utc >= end_utc:
+        return []
+    cursor = start_utc.replace(minute=0, second=0, microsecond=0)
+    hours: list[datetime] = []
+    while cursor < end_utc:
+        hours.append(cursor)
+        cursor += timedelta(hours=1)
+    return hours
+
+
+def hours_needing_candles(
+    connection: sqlite3.Connection,
+    start: datetime,
+    end: datetime,
+    *,
+    force: bool = False,
+    now: datetime | None = None,
+) -> list[datetime]:
+    """UTC hour starts to (re)fetch for candle coverage of ``[start, end)``."""
+    current = now if now is not None else datetime.now(timezone.utc)
+    needed: list[datetime] = []
+    for hour_start in utc_hour_starts(start, end):
+        hour_end = hour_start + timedelta(hours=1)
+        if force or hour_is_provisional(hour_end, now=current):
+            needed.append(hour_start)
+            continue
+        if not hour_has_complete_minutes(
+            connection, hour_start, start=start, end=end
+        ):
+            needed.append(hour_start)
+    return needed
+
+
+def store_btc_candles(
+    connection: sqlite3.Connection,
+    bars: Iterable[MinuteBar],
+) -> int:
+    """Upsert minute bars by ``end_ts``. Returns number of rows written."""
+    rows = tuple(bars)
+    if not rows:
+        return 0
+    try:
+        connection.executemany(
+            """
+            INSERT INTO btc_candles (end_ts, open, high, low, close)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(end_ts) DO UPDATE SET
+                open = excluded.open,
+                high = excluded.high,
+                low = excluded.low,
+                close = excluded.close
+            """,
+            [
+                (bar.end_ts, bar.open, bar.high, bar.low, bar.close)
+                for bar in rows
+            ],
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return len(rows)
 
 
 def existing_event_tickers(

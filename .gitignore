@@ -18,6 +18,9 @@ htmlcov/
 *.sqlite
 *.sqlite3
 data/
+secrets/
+*.pem
+*.key
 
 .DS_Store
 Thumbs.db

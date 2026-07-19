@@ -1,18 +1,28 @@
 # SPDX-FileCopyrightText: 2026 Jason Scheffel <contact@jasonscheffel.com>
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import base64
+import os
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
 BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 SERIES_TICKER = "KXBTC"
+BRTI_INDEX_ID = "BRTI"
+CF_HISTORY_VALUES_PATH = "/cfbenchmarks/history/values"
 PAGE_LIMIT = 1000
 _ET = ZoneInfo("America/New_York")
 _MONTH_ABBR = (
@@ -32,8 +42,8 @@ _MONTH_ABBR = (
 _MAX_429_ATTEMPTS = 8
 _INITIAL_429_DELAY_S = 0.5
 _MAX_429_DELAY_S = 30.0
-# Basic Read is 200 tokens/s at ~10 tokens/GET ≈ 20 req/s. Default stays well under.
-DEFAULT_MAX_RPS = 5.0
+# CF passthrough costs 50 read tokens/req (~4 rps on Basic). Combined backfill default.
+DEFAULT_MAX_RPS = 3.0
 
 STATUS_COMPLETE = "complete"
 STATUS_MISSING_EXPIRATION = "missing_expiration_value"
@@ -65,6 +75,25 @@ class SettledEvent:
 
 class KalshiParseError(ValueError):
     pass
+
+
+class KalshiAuthError(RuntimeError):
+    pass
+
+
+class KalshiAPIError(RuntimeError):
+    pass
+
+
+class KalshiCredentialsError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class KalshiCredentials:
+    api_key_id: str
+    private_key: RSAPrivateKey
+    base_url: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,22 +381,24 @@ def _hourly_closes(start: datetime, end: datetime) -> Iterator[datetime]:
 
 
 class KalshiClient:
-    """Public Kalshi market client.
+    """Kalshi market client (public) plus optional CF Benchmarks auth.
 
-    Pass an ``httpx.Client`` with ``base_url=BASE_URL`` and an explicit
-    ``timeout`` (auth headers can be added later on the same client).
+    Pass an ``httpx.Client`` with ``base_url`` matching credentials when CF
+    routes are used. Settled-market GETs stay unsigned; CF history is signed.
     """
 
     def __init__(
         self,
         http: httpx.Client,
         *,
+        credentials: KalshiCredentials | None = None,
         max_rps: float = DEFAULT_MAX_RPS,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         on_update: Callable[[FetchUpdate], None] | None = None,
     ) -> None:
         self._http = http
+        self._credentials = credentials
         self._sleep = sleep
         self._on_update = on_update
         self._limiter = RateLimiter(max_rps, sleep=sleep, monotonic=monotonic)
@@ -586,29 +617,115 @@ class KalshiClient:
             if not cursor:
                 break
 
+    def fetch_brti_minute_bars(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        hour_starts: Iterable[datetime] | None = None,
+    ):
+        """Fetch BRTI HOUR history and aggregate to 1m bars in ``[start, end)``."""
+        if self._credentials is None:
+            raise KalshiCredentialsError(
+                "Kalshi credentials required for CF Benchmarks history"
+            )
+        start_utc = _as_utc(start)
+        end_utc = _as_utc(end)
+        if start_utc >= end_utc:
+            raise ValueError("start must be earlier than end")
+        hours = (
+            list(hour_starts)
+            if hour_starts is not None
+            else _utc_hour_starts(start_utc, end_utc)
+        )
+        bars: list[Any] = []
+        total = len(hours)
+        for index, hour_start in enumerate(hours, start=1):
+            hour_start = _as_utc(hour_start).replace(
+                minute=0, second=0, microsecond=0
+            )
+            self._emit(
+                "candles",
+                f"BRTI {hour_start.isoformat().replace('+00:00', 'Z')}",
+                completed=index,
+                total=total,
+            )
+            payload = self._get_json(
+                CF_HISTORY_VALUES_PATH,
+                params={
+                    "id": BRTI_INDEX_ID,
+                    "timespan": "HOUR",
+                    # CF requires ISO_INSTANT, not unix seconds/ms.
+                    "timestamp": _cf_iso_instant(hour_start),
+                },
+                sign=True,
+            )
+            samples = parse_cf_history_samples(payload)
+            bars.extend(
+                aggregate_samples_to_minute_bars(
+                    samples, start=start_utc, end=end_utc
+                )
+            )
+        return tuple(bars)
+
     def _get_json(
-        self, path: str, *, params: Mapping[str, str] | None = None
+        self,
+        path: str,
+        *,
+        params: Mapping[str, str] | None = None,
+        sign: bool = False,
     ) -> Any:
         delay = _INITIAL_429_DELAY_S
         for attempt in range(_MAX_429_ATTEMPTS):
             self._limiter.wait()
-            response = self._http.get(path, params=params)
+            headers: dict[str, str] | None = None
+            if sign:
+                if self._credentials is None:
+                    raise KalshiCredentialsError(
+                        "Kalshi credentials required for signed requests"
+                    )
+                headers = auth_headers(self._credentials, "GET", path)
+            response = self._http.get(path, params=params, headers=headers)
             self._requests += 1
-            if response.status_code != 429:
-                response.raise_for_status()
-                self._limiter.note_success()
-                return response.json()
-            self._retries_429 += 1
-            self._limiter.note_429()
-            if attempt == _MAX_429_ATTEMPTS - 1:
-                response.raise_for_status()
-            self._emit(
-                "throttle",
-                f"429 on {path}; backing off {delay:.1f}s "
-                f"(limit ~{self._limiter.rps:.1f} req/s)",
-            )
-            self._sleep(delay)
-            delay = min(delay * 2, _MAX_429_DELAY_S)
+            if response.status_code == 429:
+                self._retries_429 += 1
+                self._limiter.note_429()
+                if attempt == _MAX_429_ATTEMPTS - 1:
+                    response.raise_for_status()
+                self._emit(
+                    "throttle",
+                    f"429 on {path}; backing off {delay:.1f}s "
+                    f"(limit ~{self._limiter.rps:.1f} req/s)",
+                )
+                self._sleep(delay)
+                delay = min(delay * 2, _MAX_429_DELAY_S)
+                continue
+            if response.status_code == 401:
+                raise KalshiAuthError(
+                    "Kalshi authentication failed (401): bad key or signature"
+                )
+            if response.status_code == 403:
+                raise KalshiAuthError(
+                    "Kalshi request forbidden (403)"
+                )
+            if response.status_code == 503:
+                if sign:
+                    raise KalshiAuthError(
+                        "Kalshi CF passthrough unavailable (503): "
+                        "entitlement missing or upstream outage"
+                    )
+                raise KalshiAPIError(
+                    f"Kalshi service unavailable (503) for {path}: "
+                    f"{_response_error_detail(response)}"
+                )
+            if response.status_code == 400:
+                raise KalshiAPIError(
+                    f"Kalshi bad request (400) for {path}: "
+                    f"{_response_error_detail(response)}"
+                )
+            response.raise_for_status()
+            self._limiter.note_success()
+            return response.json()
         raise AssertionError("unreachable")
 
     def _emit(
@@ -633,3 +750,236 @@ class KalshiClient:
                 total=total,
             )
         )
+
+
+def _utc_hour_starts(start: datetime, end: datetime) -> list[datetime]:
+    start_utc = _as_utc(start)
+    end_utc = _as_utc(end)
+    cursor = start_utc.replace(minute=0, second=0, microsecond=0)
+    hours: list[datetime] = []
+    while cursor < end_utc:
+        hours.append(cursor)
+        cursor += timedelta(hours=1)
+    return hours
+
+
+def _cf_iso_instant(value: datetime) -> str:
+    """CF history ``timestamp`` query value (ISO-8601 instant, UTC)."""
+    return (
+        _as_utc(value)
+        .replace(microsecond=0)
+        .strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    )
+
+
+def _response_error_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text.strip() or response.reason_phrase
+    if isinstance(payload, Mapping):
+        error = payload.get("error")
+        if isinstance(error, Mapping):
+            details = error.get("details")
+            message = error.get("message")
+            if details:
+                return str(details)
+            if message:
+                return str(message)
+        if "message" in payload:
+            return str(payload["message"])
+    return response.text.strip() or response.reason_phrase
+
+
+def load_private_key(path: Path | str) -> RSAPrivateKey:
+    key_path = Path(path)
+    try:
+        pem = key_path.read_bytes()
+        key = serialization.load_pem_private_key(
+            pem,
+            password=None,
+            backend=default_backend(),
+        )
+    except OSError as exc:
+        raise KalshiCredentialsError(
+            f"cannot read KALSHI_PRIVATE_KEY_PATH: {key_path}"
+        ) from exc
+    except (ValueError, TypeError) as exc:
+        raise KalshiCredentialsError(
+            f"invalid private key at KALSHI_PRIVATE_KEY_PATH: {key_path}"
+        ) from exc
+    if not isinstance(key, RSAPrivateKey):
+        raise KalshiCredentialsError(f"not an RSA private key: {key_path}")
+    return key
+
+
+def sign_pss_text(private_key: RSAPrivateKey, text: str) -> str:
+    signature = private_key.sign(
+        text.encode("utf-8"),
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.DIGEST_LENGTH,
+        ),
+        hashes.SHA256(),
+    )
+    return base64.b64encode(signature).decode("utf-8")
+
+
+def signing_path(base_url: str, path: str) -> str:
+    """Full Trade API path for signing (no query string)."""
+    root = urlparse(base_url).path.rstrip("/")
+    relative = path.split("?", 1)[0]
+    if not relative.startswith("/"):
+        relative = f"/{relative}"
+    return f"{root}{relative}"
+
+
+def auth_headers(
+    credentials: KalshiCredentials,
+    method: str,
+    path: str,
+    *,
+    timestamp_ms: str | None = None,
+) -> dict[str, str]:
+    stamp = timestamp_ms or str(int(time.time() * 1000))
+    signed = signing_path(credentials.base_url, path)
+    message = f"{stamp}{method.upper()}{signed}"
+    return {
+        "KALSHI-ACCESS-KEY": credentials.api_key_id,
+        "KALSHI-ACCESS-TIMESTAMP": stamp,
+        "KALSHI-ACCESS-SIGNATURE": sign_pss_text(
+            credentials.private_key, message
+        ),
+    }
+
+
+def load_dotenv(path: Path | str = ".env") -> None:
+    """Load ``KEY=value`` pairs from ``path`` without overriding existing env."""
+    env_path = Path(path)
+    if not env_path.is_file():
+        return
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = value.strip().strip("'").strip('"')
+
+
+def require_kalshi_credentials(
+    *,
+    env: Mapping[str, str] | None = None,
+) -> KalshiCredentials:
+    """Load API key id + PEM path from the environment (fail fast)."""
+    source = os.environ if env is None else env
+    key_id = (source.get("KALSHI_API_KEY_ID") or "").strip()
+    key_path = (source.get("KALSHI_PRIVATE_KEY_PATH") or "").strip()
+    base_url = (source.get("KALSHI_BASE_URL") or BASE_URL).strip().rstrip("/")
+    if not key_id:
+        raise KalshiCredentialsError(
+            "missing KALSHI_API_KEY_ID (set it in the environment or .env)"
+        )
+    if not key_path:
+        raise KalshiCredentialsError(
+            "missing KALSHI_PRIVATE_KEY_PATH (set it in the environment or .env)"
+        )
+    path = Path(key_path)
+    if not path.is_file():
+        raise KalshiCredentialsError(
+            f"KALSHI_PRIVATE_KEY_PATH is not a file: {key_path}"
+        )
+    return KalshiCredentials(
+        api_key_id=key_id,
+        private_key=load_private_key(path),
+        base_url=base_url,
+    )
+
+
+def normalize_cf_time(raw: int | float) -> int:
+    """Convert CF ``time`` to Unix seconds (ms values are >= 1e12)."""
+    value = int(raw)
+    if value >= 1_000_000_000_000:
+        return value // 1000
+    return value
+
+
+def parse_cf_history_samples(payload: Any) -> list[tuple[int, Decimal]]:
+    """Parse CF history/values samples as ``(unix_sec, value)`` ascending."""
+    rows = _cf_sample_rows(payload)
+    samples: list[tuple[int, Decimal]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise KalshiParseError(f"CF sample is not an object: {row!r}")
+        if "time" not in row or "value" not in row:
+            raise KalshiParseError(f"CF sample missing time/value: {row!r}")
+        samples.append(
+            (normalize_cf_time(row["time"]), Decimal(str(row["value"])))
+        )
+    samples.sort(key=lambda item: item[0])
+    return samples
+
+
+def _cf_sample_rows(payload: Any) -> Sequence[Any]:
+    if isinstance(payload, Mapping) and "data" in payload:
+        return _cf_sample_rows(payload["data"])
+    if isinstance(payload, Mapping) and "payload" in payload:
+        inner = payload["payload"]
+        if isinstance(inner, list):
+            return inner
+        if isinstance(inner, Mapping) and "value" in inner:
+            rows = inner["value"]
+            if isinstance(rows, list):
+                return rows
+        raise KalshiParseError(
+            f"unexpected CF payload shape: {type(inner)!r}"
+        )
+    if isinstance(payload, list):
+        return payload
+    raise KalshiParseError(f"unexpected CF response shape: {type(payload)!r}")
+
+
+def aggregate_samples_to_minute_bars(
+    samples: Iterable[tuple[int, Decimal]],
+    *,
+    start: datetime,
+    end: datetime,
+):
+    """Aggregate samples into 1m OHLC bars clipped to ``[start, end)``.
+
+    Bar ``end_ts`` is the exclusive minute end. A bar is kept when
+    ``end_ts > start_unix AND end_ts <= end_unix``.
+    """
+    # Local import avoids an import cycle with bob.db.
+    from bob.db import MinuteBar
+
+    start_unix = _unix(start)
+    end_unix = _unix(end)
+    if start_unix >= end_unix:
+        return ()
+
+    # Bucket by full UTC minute first. A mid-minute ``start`` must not drop
+    # earlier ticks from that minute, or stored OHLC is wrong and later
+    # backfills will skip the incomplete bar as "present".
+    buckets: dict[int, list[Decimal]] = {}
+    for ts, value in samples:
+        minute_start = ts - (ts % 60)
+        end_ts = minute_start + 60
+        if start_unix < end_ts <= end_unix:
+            buckets.setdefault(minute_start, []).append(value)
+
+    bars = []
+    for minute_start in sorted(buckets):
+        values = buckets[minute_start]
+        bars.append(
+            MinuteBar(
+                end_ts=minute_start + 60,
+                open=format(values[0], "f"),
+                high=format(max(values), "f"),
+                low=format(min(values), "f"),
+                close=format(values[-1], "f"),
+            )
+        )
+    return tuple(bars)

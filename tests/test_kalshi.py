@@ -31,7 +31,7 @@ EVENT = "KXBTC-99APR0100"
 WINNER = "KXBTC-99APR0100-B420"
 LOWER = "KXBTC-99APR0100-T100"
 UPPER = "KXBTC-99APR0100-T999999"
-EXPIRATION = "420.69"
+EXPIRATION = "11111.11111"
 START = CLOSE
 END = datetime(2099, 4, 2, tzinfo=timezone.utc)
 # Range is after this cutoff → live only, no historical scan.

@@ -30,8 +30,10 @@ from bob.kalshi import (
     expected_kxbtc_event_tickers,
     kxbtc_event_ticker,
 )
+from helpers import cf_empty_response, seed_complete_candle_hours
 
 runner = CliRunner()
+FUTURE = datetime(2100, 1, 1, tzinfo=timezone.utc)
 
 
 def test_parse_iso_datetime_requires_timezone() -> None:
@@ -42,8 +44,8 @@ def test_parse_iso_datetime_requires_timezone() -> None:
         parse_iso_datetime("2099-04-01T00:00:00")
 
 
-def test_default_max_rps_is_five() -> None:
-    assert DEFAULT_MAX_RPS == 5.0
+def test_default_max_rps_is_three() -> None:
+    assert DEFAULT_MAX_RPS == 3.0
 
 
 def test_format_eta() -> None:
@@ -72,7 +74,7 @@ def test_iter_utc_day_chunks() -> None:
     ]
 
 
-def test_run_backfill_half_open(tmp_path: Path) -> None:
+def test_run_backfill_half_open(tmp_path: Path, kalshi_credentials) -> None:
     payload = {
         "cursor": "",
         "markets": [
@@ -118,6 +120,8 @@ def test_run_backfill_half_open(tmp_path: Path) -> None:
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if "cfbenchmarks" in request.url.path:
+            return httpx.Response(200, json=cf_empty_response())
         if request.url.path.endswith("/historical/cutoff"):
             return httpx.Response(
                 200,
@@ -135,17 +139,17 @@ def test_run_backfill_half_open(tmp_path: Path) -> None:
     connection = connect(db_path)
     initialize_schema(connection)
     transport = httpx.MockTransport(handler)
+    start = datetime(2099, 4, 1, tzinfo=timezone.utc)
+    end = datetime(2099, 4, 2, tzinfo=timezone.utc)
     with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
         counts = run_backfill(
             connection,
-            KalshiClient(http, max_rps=0),
-            datetime(2099, 4, 1, tzinfo=timezone.utc),
-            datetime(2099, 4, 2, tzinfo=timezone.utc),
+            KalshiClient(http, credentials=kalshi_credentials, max_rps=0),
+            start,
+            end,
+            now=FUTURE,
         )
-    expected = expected_kxbtc_event_tickers(
-        datetime(2099, 4, 1, tzinfo=timezone.utc),
-        datetime(2099, 4, 2, tzinfo=timezone.utc),
-    )
+    expected = expected_kxbtc_event_tickers(start, end)
     assert counts.events == len(expected)
     assert counts.brackets == 2
     rows = {
@@ -187,7 +191,9 @@ def _seed_event(connection, close: datetime) -> str:
     return ticker
 
 
-def test_run_backfill_skips_full_day_already_stored(tmp_path: Path) -> None:
+def test_run_backfill_skips_full_day_already_stored(
+    tmp_path: Path, kalshi_credentials
+) -> None:
     start = datetime(2024, 4, 1, 4, 0, tzinfo=timezone.utc)
     end = datetime(2024, 4, 2, 4, 0, tzinfo=timezone.utc)
     connection = connect(tmp_path / "full.sqlite")
@@ -205,6 +211,7 @@ def test_run_backfill_skips_full_day_already_stored(tmp_path: Path) -> None:
             start, end
         ):
             _seed_event(connection, ticker_close)
+    seed_complete_candle_hours(connection, start, end)
 
     calls: list[str] = []
 
@@ -216,16 +223,20 @@ def test_run_backfill_skips_full_day_already_stored(tmp_path: Path) -> None:
     with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
         counts = run_backfill(
             connection,
-            KalshiClient(http, max_rps=0),
+            KalshiClient(http, credentials=kalshi_credentials, max_rps=0),
             start,
             end,
+            now=FUTURE,
         )
     assert counts.events == 0
+    assert counts.candles == 0
     assert calls == []
     connection.close()
 
 
-def test_run_backfill_fetches_only_missing_hour(tmp_path: Path) -> None:
+def test_run_backfill_fetches_only_missing_hour(
+    tmp_path: Path, kalshi_credentials
+) -> None:
     start = datetime(2024, 4, 1, 4, 0, tzinfo=timezone.utc)
     end = datetime(2024, 4, 2, 4, 0, tzinfo=timezone.utc)
     connection = connect(tmp_path / "gap.sqlite")
@@ -245,8 +256,12 @@ def test_run_backfill_fetches_only_missing_hour(tmp_path: Path) -> None:
 
     hist_tickers: list[str] = []
 
+    seed_complete_candle_hours(connection, start, end)
+
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
+        if "cfbenchmarks" in path:
+            return httpx.Response(200, json=cf_empty_response())
         if path.endswith("/historical/cutoff"):
             return httpx.Response(
                 200,
@@ -286,9 +301,10 @@ def test_run_backfill_fetches_only_missing_hour(tmp_path: Path) -> None:
     with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
         counts = run_backfill(
             connection,
-            KalshiClient(http, max_rps=0),
+            KalshiClient(http, credentials=kalshi_credentials, max_rps=0),
             start,
             end,
+            now=FUTURE,
         )
     assert hist_tickers == [missing_ticker]
     assert counts.events == 1
@@ -303,7 +319,9 @@ def test_run_backfill_fetches_only_missing_hour(tmp_path: Path) -> None:
     connection.close()
 
 
-def test_run_backfill_force_refetches(tmp_path: Path) -> None:
+def test_run_backfill_force_refetches(
+    tmp_path: Path, kalshi_credentials
+) -> None:
     start = datetime(2099, 4, 1, tzinfo=timezone.utc)
     end = datetime(2099, 4, 1, 1, tzinfo=timezone.utc)
     connection = connect(tmp_path / "force.sqlite")
@@ -312,9 +330,15 @@ def test_run_backfill_force_refetches(tmp_path: Path) -> None:
     _seed_event(connection, close)
     live_calls = 0
 
+    seed_complete_candle_hours(connection, start, end)
+    cf_calls = 0
+
     def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal live_calls
+        nonlocal live_calls, cf_calls
         path = request.url.path
+        if "cfbenchmarks" in path:
+            cf_calls += 1
+            return httpx.Response(200, json=cf_empty_response())
         if path.endswith("/historical/cutoff"):
             return httpx.Response(
                 200,
@@ -353,26 +377,32 @@ def test_run_backfill_force_refetches(tmp_path: Path) -> None:
     with httpx.Client(base_url=BASE_URL, transport=transport, timeout=5.0) as http:
         without_force = run_backfill(
             connection,
-            KalshiClient(http, max_rps=0),
+            KalshiClient(http, credentials=kalshi_credentials, max_rps=0),
             start,
             end,
             force=False,
+            now=FUTURE,
         )
         assert without_force.events == 0
         assert live_calls == 0
+        assert cf_calls == 0
         with_force = run_backfill(
             connection,
-            KalshiClient(http, max_rps=0),
+            KalshiClient(http, credentials=kalshi_credentials, max_rps=0),
             start,
             end,
             force=True,
+            now=FUTURE,
         )
     assert with_force.events == 1
     assert live_calls == 1
+    assert cf_calls == 1
     connection.close()
 
 
-def test_cli_backfill_rejects_bad_range(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_backfill_rejects_bad_range(
+    monkeypatch: pytest.MonkeyPatch, kalshi_credentials
+) -> None:
     monkeypatch.setattr("bob.cli.require_gate", lambda: None)
     result = runner.invoke(
         app,
@@ -388,8 +418,27 @@ def test_cli_backfill_rejects_bad_range(monkeypatch: pytest.MonkeyPatch) -> None
     assert "--start must be earlier than --end" in result.output
 
 
+def test_cli_backfill_missing_creds(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("bob.cli.require_gate", lambda: None)
+    monkeypatch.delenv("KALSHI_API_KEY_ID", raising=False)
+    monkeypatch.delenv("KALSHI_PRIVATE_KEY_PATH", raising=False)
+    monkeypatch.setattr("bob.cli.load_dotenv", lambda: None)
+    result = runner.invoke(
+        app,
+        [
+            "backfill",
+            "--start",
+            "2099-04-01T00:00:00Z",
+            "--end",
+            "2099-04-02T00:00:00Z",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "KALSHI_API_KEY_ID" in result.output
+
+
 def test_cli_backfill_mocked(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kalshi_credentials
 ) -> None:
     monkeypatch.setattr("bob.cli.require_gate", lambda: None)
 
@@ -419,6 +468,8 @@ def test_cli_backfill_mocked(
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if "cfbenchmarks" in request.url.path:
+            return httpx.Response(200, json=cf_empty_response())
         if request.url.path.endswith("/historical/cutoff"):
             return httpx.Response(
                 200,
@@ -440,6 +491,13 @@ def test_cli_backfill_mocked(
         return real_client(*args, **kwargs)
 
     monkeypatch.setattr("bob.cli.httpx.Client", fake_client)
+    original_run = run_backfill
+
+    def run_with_future(*args, **kwargs):
+        kwargs.setdefault("now", FUTURE)
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr("bob.cli.run_backfill", run_with_future)
     db_path = tmp_path / "cli.sqlite"
     result = runner.invoke(
         app,
@@ -451,9 +509,11 @@ def test_cli_backfill_mocked(
             "2099-04-02T00:00:00Z",
             "--db",
             str(db_path),
+            "--rps",
+            "0",
         ],
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "[1/1] 2099-04-01" in result.output
     expected = len(
         expected_kxbtc_event_tickers(
@@ -461,13 +521,15 @@ def test_cli_backfill_mocked(
             datetime(2099, 4, 2, tzinfo=timezone.utc),
         )
     )
-    assert f"stored {expected} events, 2 brackets" in result.output
+    assert f"stored {expected} events, 2 brackets, 0 candles" in result.output
     assert "ETA 0s" in result.output
-    assert f"done  {expected} events, 2 brackets" in result.output
+    assert (
+        f"done  {expected} events, 2 brackets, 0 candles" in result.output
+    )
 
 
 def test_cli_backfill_collapses_skip_days(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kalshi_credentials
 ) -> None:
     monkeypatch.setattr("bob.cli.require_gate", lambda: None)
     start = datetime(2024, 4, 1, 4, 0, tzinfo=timezone.utc)
@@ -479,6 +541,7 @@ def test_cli_backfill_collapses_skip_days(
         close = start + timedelta(hours=offset)
         if kxbtc_event_ticker(close) in expected_kxbtc_event_tickers(start, end):
             _seed_event(connection, close)
+    seed_complete_candle_hours(connection, start, end)
     connection.close()
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -492,6 +555,13 @@ def test_cli_backfill_collapses_skip_days(
         return real_client(*args, **kwargs)
 
     monkeypatch.setattr("bob.cli.httpx.Client", fake_client)
+    original_run = run_backfill
+
+    def run_with_future(*args, **kwargs):
+        kwargs.setdefault("now", FUTURE)
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr("bob.cli.run_backfill", run_with_future)
     result = runner.invoke(
         app,
         [
@@ -504,7 +574,7 @@ def test_cli_backfill_collapses_skip_days(
             str(db_path),
         ],
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "skipped 2 days (24 hours already stored)" in result.output
-    assert "done  0 events, 0 brackets" in result.output
+    assert "done  0 events, 0 brackets, 0 candles" in result.output
     assert "[1/" not in result.output

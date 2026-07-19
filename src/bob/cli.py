@@ -27,15 +27,21 @@ from bob.db import (
     StoreCounts,
     connect,
     event_tickers_in_close_range,
+    hours_needing_candles,
     initialize_schema,
+    store_btc_candles,
     store_settled_events,
 )
 from bob.gate import require_gate
 from bob.kalshi import (
-    BASE_URL,
     DEFAULT_MAX_RPS,
+    KalshiAPIError,
+    KalshiAuthError,
     KalshiClient,
+    KalshiCredentialsError,
     expected_kxbtc_event_tickers,
+    load_dotenv,
+    require_kalshi_credentials,
 )
 
 DEFAULT_DB = Path("data/bob.sqlite")
@@ -86,18 +92,21 @@ def run_backfill(
     end: datetime,
     *,
     force: bool = False,
+    now: datetime | None = None,
     on_day_start=None,
     on_day=None,
     on_skip=None,
 ) -> StoreCounts:
     total_events = 0
     total_brackets = 0
+    total_candles = 0
     chunks = list(iter_utc_day_chunks(start, end))
     known = (
         set()
         if force
         else event_tickers_in_close_range(connection, start, end)
     )
+    current = now if now is not None else datetime.now(timezone.utc)
     for index, (chunk_start, chunk_end) in enumerate(chunks, start=1):
         if on_day_start is not None:
             on_day_start(
@@ -108,53 +117,68 @@ def run_backfill(
         expected = expected_kxbtc_event_tickers(chunk_start, chunk_end)
         only_event_tickers: frozenset[str] | None = None
         already = 0
-        if not force:
-            existing = expected & known
-            missing = expected - known
-            already = len(existing)
-            if not missing:
-                if on_day is not None:
-                    on_day(
-                        index=index,
-                        days=len(chunks),
-                        day_start=chunk_start,
-                        counts=StoreCounts(events=0, brackets=0),
-                        requests=0,
-                        retries_429=0,
-                        already=already,
-                        missing=0,
-                    )
-                continue
-            only_event_tickers = frozenset(missing)
+        missing = len(expected)
+        event_counts = StoreCounts(events=0, brackets=0)
         req_before = client.requests
         retries_before = client.retries_429
-        events = client.fetch_settled_kxbtc(
-            start=chunk_start,
-            end=chunk_end,
-            on_skip=on_skip,
-            only_event_tickers=only_event_tickers,
-        )
-        counts = store_settled_events(connection, events)
         if not force:
-            known.update(item.event.event_ticker for item in events)
-        total_events += counts.events
-        total_brackets += counts.brackets
+            existing = expected & known
+            missing_tickers = expected - known
+            already = len(existing)
+            missing = len(missing_tickers)
+            if missing_tickers:
+                only_event_tickers = frozenset(missing_tickers)
+        if force or missing > 0:
+            events = client.fetch_settled_kxbtc(
+                start=chunk_start,
+                end=chunk_end,
+                on_skip=on_skip,
+                only_event_tickers=only_event_tickers,
+            )
+            event_counts = store_settled_events(connection, events)
+            if not force:
+                known.update(item.event.event_ticker for item in events)
+            total_events += event_counts.events
+            total_brackets += event_counts.brackets
+
+        candle_hours = hours_needing_candles(
+            connection,
+            chunk_start,
+            chunk_end,
+            force=force,
+            now=current,
+        )
+        candle_count = 0
+        if candle_hours:
+            bars = client.fetch_brti_minute_bars(
+                start=chunk_start,
+                end=chunk_end,
+                hour_starts=candle_hours,
+            )
+            candle_count = store_btc_candles(connection, bars)
+            total_candles += candle_count
+
         if on_day is not None:
             on_day(
                 index=index,
                 days=len(chunks),
                 day_start=chunk_start,
-                counts=counts,
+                counts=StoreCounts(
+                    events=event_counts.events,
+                    brackets=event_counts.brackets,
+                    candles=candle_count,
+                ),
                 requests=client.requests - req_before,
                 retries_429=client.retries_429 - retries_before,
                 already=already,
-                missing=(
-                    len(only_event_tickers)
-                    if only_event_tickers is not None
-                    else len(expected)
-                ),
+                missing=missing,
+                candle_hours=len(candle_hours),
             )
-    return StoreCounts(events=total_events, brackets=total_brackets)
+    return StoreCounts(
+        events=total_events,
+        brackets=total_brackets,
+        candles=total_candles,
+    )
 
 
 def _day_label(day_start: datetime) -> str:
@@ -181,7 +205,7 @@ def backfill(
         datetime,
         typer.Option(
             ...,
-            help="UTC start of close_time range [start, end).",
+            help="UTC start of close_time / candle range [start, end).",
             parser=parse_iso_datetime,
             metavar="ISO",
         ),
@@ -190,7 +214,7 @@ def backfill(
         datetime,
         typer.Option(
             ...,
-            help="UTC end of close_time range [start, end).",
+            help="UTC end of close_time / candle range [start, end).",
             parser=parse_iso_datetime,
             metavar="ISO",
         ),
@@ -203,7 +227,7 @@ def backfill(
         float,
         typer.Option(
             help=(
-                "Max HTTP requests/sec (Basic Kalshi Read ≈ 20). "
+                "Max HTTP requests/sec (CF passthrough ≈ 4 on Basic). "
                 "Use 0 to disable pacing."
             ),
         ),
@@ -212,18 +236,24 @@ def backfill(
         bool,
         typer.Option(
             "--force",
-            help="Refetch every hour even when it already exists in SQLite.",
+            help="Refetch events and candles even when already stored.",
         ),
     ] = False,
 ) -> None:
-    """Backfill settled KXBTC events and brackets into SQLite."""
+    """Backfill settled KXBTC events and BRTI 1m candles into SQLite."""
     require_gate()
+    load_dotenv()
     if start >= end:
         console.print("[red]Error:[/red] --start must be earlier than --end")
         raise typer.Exit(code=2)
     if rps < 0:
         console.print("[red]Error:[/red] --rps must be >= 0")
         raise typer.Exit(code=2)
+    try:
+        credentials = require_kalshi_credentials()
+    except KalshiCredentialsError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
 
     days = len(list(iter_utc_day_chunks(start, end)))
     started = time.monotonic()
@@ -281,10 +311,11 @@ def backfill(
                 retries_429: int,
                 already: int,
                 missing: int,
+                candle_hours: int,
             ) -> None:
                 nonlocal skip_days, skip_hours
                 day = _day_label(day_start)
-                if missing == 0 and not force:
+                if missing == 0 and candle_hours == 0 and not force:
                     skip_days += 1
                     skip_hours += already
                     progress.update(
@@ -307,15 +338,16 @@ def backfill(
                 if already and not force:
                     summary = (
                         f"stored {counts.events} events, "
-                        f"{counts.brackets} brackets  "
+                        f"{counts.brackets} brackets, "
+                        f"{counts.candles} candles  "
                         f"({missing} missing, {already} skipped)"
                     )
                 else:
                     summary = (
                         f"stored {counts.events} events, "
-                        f"{counts.brackets} brackets"
+                        f"{counts.brackets} brackets, "
+                        f"{counts.candles} candles"
                     )
-                # Permanent day log (not overwritten by the live bar).
                 progress.console.print(
                     f"[{index}/{days}] {day}  "
                     f"{summary}  "
@@ -328,23 +360,35 @@ def backfill(
                     description=f"finished {day}",
                 )
 
-            with httpx.Client(base_url=BASE_URL, timeout=30.0) as http:
-                counts = run_backfill(
-                    connection,
-                    KalshiClient(http, max_rps=rps),
-                    start,
-                    end,
-                    force=force,
-                    on_day_start=on_day_start,
-                    on_day=on_day,
-                    on_skip=on_skip,
-                )
+            try:
+                with httpx.Client(
+                    base_url=credentials.base_url, timeout=30.0
+                ) as http:
+                    counts = run_backfill(
+                        connection,
+                        KalshiClient(
+                            http,
+                            credentials=credentials,
+                            max_rps=rps,
+                        ),
+                        start,
+                        end,
+                        force=force,
+                        on_day_start=on_day_start,
+                        on_day=on_day,
+                        on_skip=on_skip,
+                    )
+            except (KalshiAuthError, KalshiAPIError) as exc:
+                flush_skips()
+                console.print(f"[red]Error:[/red] {exc}")
+                raise typer.Exit(code=1) from exc
             flush_skips()
             progress.update(task_id, description="done")
     finally:
         connection.close()
     console.print(
-        f"done  {counts.events} events, {counts.brackets} brackets"
+        f"done  {counts.events} events, {counts.brackets} brackets, "
+        f"{counts.candles} candles"
     )
 
 

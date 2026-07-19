@@ -1,0 +1,14 @@
+{
+  "_fixture": "SYNTHETIC — not real CF Benchmarks / BRTI data",
+  "data": {
+    "serverTime": "2099-04-01T13:00:00.000Z",
+    "payload": [
+      {"time": 4078728000000, "value": "1.11"},
+      {"time": 4078728001500, "value": "9.99"},
+      {"time": 4078728003000, "value": "0.01"},
+      {"time": 4078728060000, "value": "2.22"},
+      {"time": 4078728060500, "value": "3.33"},
+      {"time": 4078731599000, "value": "4.44"}
+    ]
+  }
+}

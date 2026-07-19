@@ -5,6 +5,7 @@ path = [
     ".gitignore",
     ".editorconfig",
     ".python-version",
+    ".env.example",
     "pyproject.toml",
     "uv.lock",
     "tests/fixtures/**",
