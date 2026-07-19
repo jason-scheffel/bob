@@ -7,6 +7,8 @@ SPDX-License-Identifier: CC-BY-SA-4.0
 
 > [!IMPORTANT]
 > Do not use this shit. I am not responsible for anything or any losses.
+> It currently does not work as expected.
+>
 > This software is experimental and also not finished and may fail and lose funds.
 > It is public for my own convenience and not because I care about sharing it with people.
 
