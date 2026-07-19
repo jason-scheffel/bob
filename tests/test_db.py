@@ -8,7 +8,9 @@ import pytest
 
 from bob.db import (
     SCHEMA_VERSION,
+    CandleGapError,
     MinuteBar,
+    acknowledge_candle_hour_gap,
     candle_in_event_window,
     connect,
     event_tickers_in_close_range,
@@ -181,10 +183,7 @@ def test_store_updates_parent_and_replaces_brackets(db) -> None:
         "SELECT expiration_value FROM events WHERE event_ticker = ?",
         ("KXBTC-99APR0100",),
     ).fetchone() == ("421.00",)
-    tickers = {
-        row[0]
-        for row in db.execute("SELECT ticker FROM brackets").fetchall()
-    }
+    tickers = {row[0] for row in db.execute("SELECT ticker FROM brackets").fetchall()}
     assert tickers == {"KXBTC-99APR0100-B421"}
 
 
@@ -269,53 +268,141 @@ def _seed_v1_schema(connection) -> None:
     connection.commit()
 
 
-def test_fresh_schema_is_v3(db) -> None:
+def test_fresh_schema_is_v4(db) -> None:
     assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-    assert SCHEMA_VERSION == 3
+    assert SCHEMA_VERSION == 4
     tables = {
         row[0]
-        for row in db.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        )
+        for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
     assert "btc_candles" in tables
+    assert "candle_hour_gaps" in tables
 
 
-def test_migrate_v1_to_v3() -> None:
+def test_migrate_v1_to_v4() -> None:
     connection = connect(":memory:")
     _seed_v1_schema(connection)
 
     initialize_schema(connection)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
     assert connection.execute(
         "SELECT status, expiration_value FROM events WHERE event_ticker = ?",
         ("KXBTC-99APR0100",),
     ).fetchone() == (STATUS_COMPLETE, "420.69")
     assert connection.execute("SELECT COUNT(*) FROM brackets").fetchone()[0] == 1
-    assert connection.execute(
-        "SELECT COUNT(*) FROM sqlite_master WHERE name = 'btc_candles'"
-    ).fetchone()[0] == 1
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'btc_candles'"
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'candle_hour_gaps'"
+        ).fetchone()[0]
+        == 1
+    )
     connection.close()
 
 
 def _seed_v2_schema(connection) -> None:
     initialize_schema(connection)
-    # Downgrade marker after creating v3, then rebuild as v2-only.
+    # Downgrade marker after creating current schema, then rebuild as v2-only.
     connection.execute("DROP TABLE btc_candles")
+    connection.execute("DROP TABLE candle_hour_gaps")
     connection.execute("PRAGMA user_version = 2")
     connection.commit()
 
 
-def test_migrate_v2_to_v3() -> None:
+def test_migrate_v2_to_v4() -> None:
     connection = connect(":memory:")
     _seed_v2_schema(connection)
     assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
     initialize_schema(connection)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
-    assert connection.execute(
-        "SELECT COUNT(*) FROM sqlite_master WHERE name = 'btc_candles'"
-    ).fetchone()[0] == 1
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'btc_candles'"
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'candle_hour_gaps'"
+        ).fetchone()[0]
+        == 1
+    )
     connection.close()
+
+
+def test_migrate_v3_to_v4() -> None:
+    connection = connect(":memory:")
+    initialize_schema(connection)
+    connection.execute("DROP TABLE candle_hour_gaps")
+    connection.execute("PRAGMA user_version = 3")
+    connection.commit()
+    initialize_schema(connection)
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert (
+        connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'candle_hour_gaps'"
+        ).fetchone()[0]
+        == 1
+    )
+    connection.close()
+
+
+def test_acknowledge_candle_hour_gap(db) -> None:
+    hour = datetime(2099, 4, 1, 12, tzinfo=timezone.utc)
+    # Partial hour: 10 bars only.
+    store_btc_candles(
+        db,
+        [
+            MinuteBar(
+                end_ts=int(hour.timestamp()) + 60 * i,
+                open="1",
+                high="1",
+                low="1",
+                close="1",
+            )
+            for i in range(1, 11)
+        ],
+    )
+    acknowledge_candle_hour_gap(
+        db, hour, now=datetime(2099, 4, 2, 1, tzinfo=timezone.utc)
+    )
+    assert db.execute(
+        "SELECT reason FROM candle_hour_gaps WHERE hour_start = ?",
+        (int(hour.timestamp()),),
+    ).fetchone() == ("upstream_gap",)
+
+    with pytest.raises(CandleGapError, match="provisional"):
+        acknowledge_candle_hour_gap(
+            db,
+            datetime(2099, 4, 3, 0, tzinfo=timezone.utc),
+            now=datetime(2099, 4, 3, 0, 10, tzinfo=timezone.utc),
+        )
+
+    complete_hour = datetime(2099, 4, 1, 10, tzinfo=timezone.utc)
+    store_btc_candles(
+        db,
+        [
+            MinuteBar(
+                end_ts=int(complete_hour.timestamp()) + 60 * i,
+                open="1",
+                high="1",
+                low="1",
+                close="1",
+            )
+            for i in range(1, 61)
+        ],
+    )
+    with pytest.raises(CandleGapError, match="60 minute bars"):
+        acknowledge_candle_hour_gap(
+            db,
+            complete_hour,
+            now=datetime(2099, 4, 2, 1, tzinfo=timezone.utc),
+        )
 
 
 def test_migrate_v1_to_v2_rolls_back_on_fk_failure() -> None:
@@ -336,9 +423,7 @@ def test_migrate_v1_to_v2_rolls_back_on_fk_failure() -> None:
         initialize_schema(connection)
 
     assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
-    cols = {
-        row[1] for row in connection.execute("PRAGMA table_info(events)")
-    }
+    cols = {row[1] for row in connection.execute("PRAGMA table_info(events)")}
     assert cols == {"event_ticker", "close_ts", "expiration_value"}
     assert connection.execute(
         "SELECT expiration_value FROM events WHERE event_ticker = ?",

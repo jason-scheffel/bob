@@ -14,8 +14,9 @@ from bob.kalshi import (
     SettledEvent,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 CANDLE_LAG_S = 15 * 60
+REASON_UPSTREAM_GAP = "upstream_gap"
 
 # Stronger observations may replace weaker ones; never the reverse.
 _STATUS_RANK = {
@@ -31,6 +32,13 @@ CREATE TABLE IF NOT EXISTS btc_candles (
     high TEXT NOT NULL,
     low TEXT NOT NULL,
     close TEXT NOT NULL
+);
+"""
+
+_CANDLE_HOUR_GAPS_DDL = f"""
+CREATE TABLE IF NOT EXISTS candle_hour_gaps (
+    hour_start INTEGER PRIMARY KEY CHECK (hour_start % 3600 = 0),
+    reason TEXT NOT NULL CHECK (reason = '{REASON_UPSTREAM_GAP}')
 );
 """
 
@@ -68,7 +76,12 @@ CREATE INDEX IF NOT EXISTS brackets_event_idx ON brackets(event_ticker);
 CREATE INDEX IF NOT EXISTS events_close_idx ON events(close_ts);
 
 {_BTC_CANDLES_DDL}
+{_CANDLE_HOUR_GAPS_DDL}
 """
+
+
+class CandleGapError(ValueError):
+    """Acknowledgment rejected (provisional, already complete, etc.)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +124,7 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         return
     if version == 0:
         connection.executescript(_SCHEMA)
-        connection.execute("PRAGMA user_version = 3")
+        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         connection.commit()
         return
     if version == 1:
@@ -119,6 +132,9 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     if version == 2:
         _migrate_v2_to_v3(connection)
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if version == 3:
+        _migrate_v3_to_v4(connection)
 
 
 def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
@@ -198,9 +214,7 @@ def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
             )
             bad = connection.execute("PRAGMA foreign_key_check").fetchall()
             if bad:
-                raise RuntimeError(
-                    f"foreign key check failed after migrate: {bad}"
-                )
+                raise RuntimeError(f"foreign key check failed after migrate: {bad}")
             connection.execute("PRAGMA user_version = 2")
             connection.execute("COMMIT")
         except Exception:
@@ -235,6 +249,57 @@ def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
             raise
     finally:
         connection.isolation_level = previous_isolation
+
+
+def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
+    previous_isolation = connection.isolation_level
+    connection.isolation_level = None
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            connection.execute(_CANDLE_HOUR_GAPS_DDL)
+            connection.execute("PRAGMA user_version = 4")
+            connection.execute("COMMIT")
+        except Exception:
+            connection.execute("ROLLBACK")
+            raise
+    finally:
+        connection.isolation_level = previous_isolation
+
+
+def acknowledge_candle_hour_gap(
+    connection: sqlite3.Connection,
+    hour_start: datetime,
+    *,
+    reason: str = REASON_UPSTREAM_GAP,
+    now: datetime | None = None,
+) -> None:
+    """Mark a non-provisional incomplete hour as an acknowledged upstream gap."""
+    if hour_start.tzinfo is None:
+        raise ValueError("hour_start must be timezone-aware")
+    hour_utc = hour_start.astimezone(timezone.utc).replace(
+        minute=0, second=0, microsecond=0
+    )
+    if hour_utc != hour_start.astimezone(timezone.utc):
+        raise CandleGapError(
+            f"hour_start must be UTC-hour aligned: {hour_start.isoformat()}"
+        )
+    if reason != REASON_UPSTREAM_GAP:
+        raise CandleGapError(f"unsupported gap reason: {reason!r}")
+    hour_end = hour_utc + timedelta(hours=1)
+    if hour_is_provisional(hour_end, now=now):
+        raise CandleGapError(f"hour is still provisional: {hour_utc.isoformat()}")
+    if hour_has_complete_minutes(connection, hour_utc):
+        raise CandleGapError(f"hour already has 60 minute bars: {hour_utc.isoformat()}")
+    connection.execute(
+        """
+        INSERT INTO candle_hour_gaps (hour_start, reason)
+        VALUES (?, ?)
+        ON CONFLICT(hour_start) DO UPDATE SET reason = excluded.reason
+        """,
+        (int(hour_utc.timestamp()), reason),
+    )
+    connection.commit()
 
 
 def candle_in_event_window(end_ts: int, close_ts: int) -> bool:
@@ -275,11 +340,7 @@ def expected_minute_ends(
     hour_ts = int(hour_start.astimezone(timezone.utc).timestamp())
     hour_end_ts = hour_ts + 3600
     lo = hour_ts if start is None else int(start.astimezone(timezone.utc).timestamp())
-    hi = (
-        hour_end_ts
-        if end is None
-        else int(end.astimezone(timezone.utc).timestamp())
-    )
+    hi = hour_end_ts if end is None else int(end.astimezone(timezone.utc).timestamp())
     lo = max(lo, hour_ts)
     hi = min(hi, hour_end_ts)
     if lo >= hi:
@@ -341,9 +402,7 @@ def hours_needing_candles(
         if force or hour_is_provisional(hour_end, now=current):
             needed.append(hour_start)
             continue
-        if not hour_has_complete_minutes(
-            connection, hour_start, start=start, end=end
-        ):
+        if not hour_has_complete_minutes(connection, hour_start, start=start, end=end):
             needed.append(hour_start)
     return needed
 
@@ -367,10 +426,7 @@ def store_btc_candles(
                 low = excluded.low,
                 close = excluded.close
             """,
-            [
-                (bar.end_ts, bar.open, bar.high, bar.low, bar.close)
-                for bar in rows
-            ],
+            [(bar.end_ts, bar.open, bar.high, bar.low, bar.close) for bar in rows],
         )
         connection.commit()
     except Exception:
@@ -436,25 +492,19 @@ def _upsert_event(connection: sqlite3.Connection, item: SettledEvent) -> bool:
     """Write ``item`` unless a stronger status already exists. Return wrote?"""
     event = item.event
     if event.close_ts.tzinfo is None:
-        raise ValueError(
-            f"close_ts must be timezone-aware: {event.close_ts!r}"
-        )
+        raise ValueError(f"close_ts must be timezone-aware: {event.close_ts!r}")
     if event.status not in _STATUS_RANK:
         raise ValueError(f"unknown event status: {event.status!r}")
     existing = connection.execute(
         "SELECT status FROM events WHERE event_ticker = ?",
         (event.event_ticker,),
     ).fetchone()
-    if (
-        existing is not None
-        and _STATUS_RANK[event.status] < _STATUS_RANK[existing[0]]
-    ):
+    if existing is not None and _STATUS_RANK[event.status] < _STATUS_RANK[existing[0]]:
         return False
     if event.status == STATUS_COMPLETE:
         if event.expiration_value is None:
             raise ValueError(
-                f"complete event requires expiration_value: "
-                f"{event.event_ticker!r}"
+                f"complete event requires expiration_value: {event.event_ticker!r}"
             )
         expiration_value: str | None = format(event.expiration_value, "f")
     else:
@@ -497,9 +547,7 @@ def _upsert_event(connection: sqlite3.Connection, item: SettledEvent) -> bool:
                 None
                 if bracket.floor_strike is None
                 else format(bracket.floor_strike, "f"),
-                None
-                if bracket.cap_strike is None
-                else format(bracket.cap_strike, "f"),
+                None if bracket.cap_strike is None else format(bracket.cap_strike, "f"),
                 1 if bracket.won else 0,
             )
             for bracket in item.brackets

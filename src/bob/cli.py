@@ -25,7 +25,9 @@ from rich.progress import (
 from rich.table import Table
 
 from bob.db import (
+    CandleGapError,
     StoreCounts,
+    acknowledge_candle_hour_gap,
     connect,
     event_tickers_in_close_range,
     hours_needing_candles,
@@ -429,6 +431,43 @@ def viz(
         console.print(f"[red]Error:[/red] database not found: {db}")
         raise typer.Exit(code=2)
     raise typer.Exit(code=run_streamlit(db))
+
+
+@app.command("ack-candle-gap")
+def ack_candle_gap(
+    hour: Annotated[
+        datetime,
+        typer.Option(
+            ...,
+            help="UTC hour start to acknowledge (must be hour-aligned).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ],
+    db: Annotated[
+        Path,
+        typer.Option(help="SQLite path."),
+    ] = DEFAULT_DB,
+) -> None:
+    """Acknowledge an upstream CF candle hole for coverage accounting."""
+    require_gate()
+    if not db.is_file():
+        console.print(f"[red]Error:[/red] database not found: {db}")
+        raise typer.Exit(code=2)
+    connection = connect(db)
+    try:
+        initialize_schema(connection)
+        try:
+            acknowledge_candle_hour_gap(connection, hour)
+        except CandleGapError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(code=2) from exc
+    finally:
+        connection.close()
+    console.print(
+        f"acknowledged upstream gap at "
+        f"{hour.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    )
 
 
 def parse_checkpoint_minutes(value: str) -> tuple[int, ...]:

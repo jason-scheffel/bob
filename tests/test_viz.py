@@ -20,6 +20,7 @@ from bob.browse import (
 from bob.cli import app
 from bob.db import (
     MinuteBar,
+    acknowledge_candle_hour_gap,
     connect,
     initialize_schema,
     store_btc_candles,
@@ -36,6 +37,7 @@ from bob.kalshi import (
 from bob.viz import (
     HOURS_PER_DAY,
     filter_coverage,
+    format_coverage_percent,
     load_coverage,
     months_from_report,
     summarize_report,
@@ -47,8 +49,7 @@ runner = CliRunner()
 def _event(close: datetime, *, ticker: str | None = None) -> SettledEvent:
     day = close.astimezone(timezone.utc)
     event_ticker = ticker or (
-        f"KXBTC-{day.year % 100:02d}APR"
-        f"{day.day:02d}{day.hour:02d}"
+        f"KXBTC-{day.year % 100:02d}APR{day.day:02d}{day.hour:02d}"
     )
     return SettledEvent(
         event=Event(
@@ -131,6 +132,17 @@ def test_filter_coverage_range() -> None:
     ]
     assert "2099-04-02 → 2099-04-03" in summarize_report(sliced)
     connection.close()
+
+
+def test_format_coverage_percent_never_rounds_partial_to_100() -> None:
+    # April-like: events full, one candle hour short → mean rounds to 100%
+    # with :.0% but status is partial.
+    fraction = (1.0 + 719 / 720) / 2
+    assert f"{fraction:.0%}" == "100%"
+    assert format_coverage_percent(fraction, complete=False) == "99.9%"
+    assert format_coverage_percent(1.0, complete=True) == "100%"
+    assert format_coverage_percent(0.0, complete=False) == "0%"
+    assert format_coverage_percent(0.5, complete=False) == "50%"
 
 
 def test_months_from_report_groups_and_status() -> None:
@@ -247,6 +259,87 @@ def _seed_candle_hours(connection, day: date, hours: range) -> None:
                 )
             )
     store_btc_candles(connection, bars)
+
+
+def test_acknowledged_gap_counts_toward_green() -> None:
+    connection = connect(":memory:")
+    initialize_schema(connection)
+    day = date(2099, 4, 1)
+    events = [
+        _event(
+            datetime(2099, 4, 1, hour, tzinfo=timezone.utc),
+            ticker=f"KXBTC-99APR01{hour:02d}",
+        )
+        for hour in range(HOURS_PER_DAY)
+    ]
+    store_settled_events(connection, events)
+    _seed_candle_hours(connection, day, range(23))
+    # Hour 23 incomplete (10 bars).
+    hour = datetime(2099, 4, 1, 23, tzinfo=timezone.utc)
+    store_btc_candles(
+        connection,
+        [
+            MinuteBar(
+                end_ts=int(hour.timestamp()) + 60 * i,
+                open="1",
+                high="1",
+                low="1",
+                close="1",
+            )
+            for i in range(1, 11)
+        ],
+    )
+    report = load_coverage(connection)
+    assert report.days[0].status == "partial"
+    assert report.days[0].candle_hours == 23
+    assert report.days[0].gappy_hours == 0
+
+    acknowledge_candle_hour_gap(
+        connection,
+        hour,
+        now=datetime(2099, 4, 2, 1, tzinfo=timezone.utc),
+    )
+    report = load_coverage(connection)
+    assert report.days[0].candle_hours == 23
+    assert report.days[0].gappy_hours == 1
+    assert report.days[0].accounted_candle_hours == 24
+    assert report.days[0].status == "full"
+    assert report.days[0].label() == "24✓ / 23c 1g"
+    month = months_from_report(report)[0]
+    assert month.status == "full"
+    assert month.candles_cell() == "23c+1g/24"
+    assert format_coverage_percent(month.overall_fraction, complete=True) == "100%"
+    connection.close()
+
+
+def test_gap_ignored_when_hour_later_complete() -> None:
+    connection = connect(":memory:")
+    initialize_schema(connection)
+    day = date(2099, 4, 1)
+    hour = datetime(2099, 4, 1, 0, tzinfo=timezone.utc)
+    store_btc_candles(
+        connection,
+        [
+            MinuteBar(
+                end_ts=int(hour.timestamp()) + 60 * i,
+                open="1",
+                high="1",
+                low="1",
+                close="1",
+            )
+            for i in range(1, 11)
+        ],
+    )
+    acknowledge_candle_hour_gap(
+        connection,
+        hour,
+        now=datetime(2099, 4, 2, 1, tzinfo=timezone.utc),
+    )
+    _seed_candle_hours(connection, day, range(1))
+    report = load_coverage(connection)
+    assert report.days[0].candle_hours == 1
+    assert report.days[0].gappy_hours == 0
+    connection.close()
 
 
 def test_full_day_with_flags_needs_candles_for_green() -> None:
@@ -370,9 +463,7 @@ def test_browse_formatters_are_human_readable() -> None:
         close_ts=close,
         expiration_value="56562.29",
     )
-    assert format_event_label(event) == (
-        "Jun 30, 2026 8:00 PM ET · BTC $56,562.29"
-    )
+    assert format_event_label(event) == ("Jun 30, 2026 8:00 PM ET · BTC $56,562.29")
 
 
 def test_cli_viz_missing_db(monkeypatch, tmp_path: Path) -> None:

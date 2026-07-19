@@ -24,6 +24,7 @@ from bob.viz import (
     DayCoverage,
     MonthCoverage,
     filter_coverage,
+    format_coverage_percent,
     load_coverage,
     months_from_report,
     summarize_report,
@@ -137,9 +138,12 @@ def _coverage_tab(report: CoverageReport) -> None:
     else:
         _show_days(selected)
     st.caption(
-        "Cell: events then candles (e.g. 20✓ 4· / 22c). "
-        "✓ complete event, · flagged event, c = hours with all 60 BRTI minutes. "
-        "Green = events and candles both full, yellow = partial, red = empty"
+        "Cell: events then candles (e.g. 20✓ 4· / 22c 1g). "
+        "✓ complete event, · flagged event, "
+        "c = hours with all 60 BRTI minutes, "
+        "g = acknowledged upstream candle gap. "
+        "Green = events and candles both accounted, "
+        "yellow = partial, red = empty"
         + (", gray = outside DB span" if level == "Days" else "")
         + "."
     )
@@ -158,13 +162,12 @@ def _show_months(report: CoverageReport) -> None:
                 "empty_days": month.missing_days,
                 "complete": month.complete_events,
                 "flagged": month.flagged_events,
-                "events": (
-                    f"{month.covered_events}/{month.expected_events}"
+                "events": (f"{month.covered_events}/{month.expected_events}"),
+                "candles": month.candles_cell(),
+                "coverage": format_coverage_percent(
+                    month.overall_fraction,
+                    complete=month.status == "full",
                 ),
-                "candles": (
-                    f"{month.covered_candle_hours}/{month.expected_events}"
-                ),
-                "coverage": f"{month.overall_fraction:.0%}",
                 "status": month.status,
             }
             for month in months
@@ -274,9 +277,7 @@ def _browse_tab(connection, report: CoverageReport) -> None:
     brackets_frame = pd.DataFrame(
         [
             {
-                "Range": format_bracket_range(
-                    bracket.floor_strike, bracket.cap_strike
-                ),
+                "Range": format_bracket_range(bracket.floor_strike, bracket.cap_strike),
                 "Result": "Won" if bracket.won else "Lost",
             }
             for bracket in brackets
