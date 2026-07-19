@@ -7,10 +7,14 @@ SPDX-License-Identifier: CC-BY-SA-4.0
 
 > [!IMPORTANT]
 > Do not use this shit. I am not responsible for anything or any losses.
+>
 > It currently does not work as expected.
 >
 > This software is experimental and also not finished and may fail and lose funds.
 > It is public for my own convenience and not because I care about sharing it with people.
+>
+> This is just a hobby trading bot thats fun for me. But I vibe code this repo too.
+> I think that you might not be sane if you actually use this, so dont.
 
 ## License
 
