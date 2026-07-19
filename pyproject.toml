@@ -7,7 +7,9 @@ authors = [
     { name = "Jason Scheffel", email = "contact@jasonscheffel.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "argon2-cffi>=25.1.0",
+]
 
 [project.scripts]
 bob = "bob:main"
@@ -15,3 +17,8 @@ bob = "bob:main"
 [build-system]
 requires = ["uv_build>=0.9.26,<0.10.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

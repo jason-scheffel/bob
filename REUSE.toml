@@ -6,6 +6,7 @@ path = [
     ".editorconfig",
     ".python-version",
     "pyproject.toml",
+    "uv.lock",
 ]
 SPDX-FileCopyrightText = "2026 Jason Scheffel <contact@jasonscheffel.com>"
 SPDX-License-Identifier = "CC0-1.0"
