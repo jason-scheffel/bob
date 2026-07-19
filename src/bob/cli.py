@@ -47,9 +47,10 @@ from bob.kalshi import (
     load_dotenv,
     require_kalshi_credentials,
 )
-from bob.research import s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12
+from bob.research import s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13
 from bob.research.s1 import Side
 from bob.research.s12 import DEFAULT_TAU
+from bob.research.s13 import DEFAULT_P_STAR
 
 DEFAULT_DB = Path("data/bob.sqlite")
 
@@ -60,7 +61,7 @@ app = typer.Typer(
 research_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
-    help="Offline outcome-accuracy studies (named strategies: s1–s12).",
+    help="Offline outcome-accuracy studies (named strategies: s1–s13).",
 )
 app.add_typer(research_app, name="research")
 console = Console(stderr=True)
@@ -792,6 +793,74 @@ def research_s12(
     _print_research_tables(
         strategy=report.strategy,
         summary=f"{s12.STRATEGY_SUMMARY} · tau={report.tau}",
+        side=report.side,
+        minutes=report.minutes,
+        abstention_attr="abstained",
+    )
+
+
+@research_app.command("s13")
+def research_s13(
+    db: Annotated[
+        Path,
+        typer.Option(help="SQLite path."),
+    ] = DEFAULT_DB,
+    minutes: Annotated[
+        str,
+        typer.Option(help="Comma-separated checkpoint minutes (30..59)."),
+    ] = ",".join(str(minute) for minute in s13.DEFAULT_CHECKPOINT_MINUTES),
+    side: Annotated[
+        Side,
+        typer.Option(
+            help="Buy YES or NO on the selected bracket.",
+            parser=parse_side,
+            metavar="yes|no",
+        ),
+    ] = "yes",
+    p_star: Annotated[
+        Decimal,
+        typer.Option(
+            "--p-star",
+            help="Trade when estimated terminal win probability ≥ p-star.",
+            parser=parse_tau,
+            metavar="0..1",
+        ),
+    ] = DEFAULT_P_STAR,
+    start: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC start of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC end of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+) -> None:
+    """s13: regime-pooled terminal-probability current-bracket hold accuracy."""
+    require_gate()
+    minute_list = _research_common_options(db, start, end, minutes)
+    connection = connect(db)
+    try:
+        report = s13.evaluate(
+            connection,
+            minutes=minute_list,
+            side=side,
+            p_star=p_star,
+            start=start,
+            end=end,
+        )
+    finally:
+        connection.close()
+    _print_research_tables(
+        strategy=report.strategy,
+        summary=f"{s13.STRATEGY_SUMMARY} · p_star={report.p_star}",
         side=report.side,
         minutes=report.minutes,
         abstention_attr="abstained",

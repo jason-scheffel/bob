@@ -591,5 +591,6 @@ def test_research_commands_registered(monkeypatch: pytest.MonkeyPatch) -> None:
         "s10",
         "s11",
         "s12",
+        "s13",
     ):
         assert name in result.output
