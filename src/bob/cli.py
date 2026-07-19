@@ -69,6 +69,7 @@ from bob.research import (
     s14,
     s15,
     s16,
+    s17,
 )
 from bob.research.pnl import score_trades_by_minute
 from bob.research.runner import run_all_strategy_pnl
@@ -78,6 +79,7 @@ from bob.research.s13 import DEFAULT_P_STAR
 from bob.research.s14 import DEFAULT_Q_STAR
 from bob.research.s15 import DEFAULT_DWELL, DEFAULT_MOVE
 from bob.research.s16 import DEFAULT_MAX_MOVE
+from bob.research.s17 import DEFAULT_MIN_OCCUPANCY
 
 DEFAULT_DB = Path("data/bob.sqlite")
 
@@ -88,7 +90,7 @@ app = typer.Typer(
 research_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
-    help="Offline quote-sim research (named strategies: s1–s16).",
+    help="Offline quote-sim research (named strategies: s1–s17).",
 )
 app.add_typer(research_app, name="research")
 console = Console(stderr=True)
@@ -668,6 +670,16 @@ def parse_dwell(value: str) -> int:
     if dwell < 2:
         raise typer.BadParameter("dwell must be an integer >= 2")
     return dwell
+
+
+def parse_occupancy(value: str) -> Decimal:
+    try:
+        occupancy = Decimal(value)
+    except InvalidOperation as exc:
+        raise typer.BadParameter("occupancy must be a decimal in (0, 1]") from exc
+    if not occupancy.is_finite() or not (Decimal("0") < occupancy <= Decimal("1")):
+        raise typer.BadParameter("occupancy must be a decimal in (0, 1]")
+    return occupancy
 
 
 def parse_side(value: str) -> Side:
@@ -1306,6 +1318,89 @@ def research_s16(
     )
 
 
+@research_app.command("s17")
+def research_s17(
+    db: Annotated[
+        Path,
+        typer.Option(help="SQLite path."),
+    ] = DEFAULT_DB,
+    minutes: Annotated[
+        str,
+        typer.Option(help="Comma-separated checkpoint minutes (20..59)."),
+    ] = ",".join(str(minute) for minute in s17.DEFAULT_CHECKPOINT_MINUTES),
+    side: Annotated[
+        Side,
+        typer.Option(
+            help="Buy YES or NO on the selected bracket.",
+            parser=parse_side,
+            metavar="yes|no",
+        ),
+    ] = "yes",
+    min_occupancy: Annotated[
+        Decimal,
+        typer.Option(
+            "--min-occupancy",
+            help="Minimum unique-modal share of closes 1..M.",
+            parser=parse_occupancy,
+            metavar="0..1",
+        ),
+    ] = DEFAULT_MIN_OCCUPANCY,
+    max_move: Annotated[
+        Decimal,
+        typer.Option(
+            "--max-move",
+            help="Abstain when |close_M − open_1| ≥ max-move (dollars).",
+            parser=parse_positive_decimal,
+            metavar="USD",
+        ),
+    ] = DEFAULT_MAX_MOVE,
+    start: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC start of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC end of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+) -> None:
+    """s17: sticky-current modal occupancy hold (quote-sim)."""
+    require_gate()
+    minute_list = _research_common_options(db, start, end, minutes)
+    connection = connect(db)
+    try:
+        report = s17.evaluate(
+            connection,
+            minutes=minute_list,
+            side=side,
+            min_occupancy=min_occupancy,
+            max_move=max_move,
+            start=start,
+            end=end,
+        )
+        by_minute = score_trades_by_minute(connection, report.trades, minute_list)
+    finally:
+        connection.close()
+    _print_research_tables(
+        strategy=report.strategy,
+        summary=(
+            f"{s17.STRATEGY_SUMMARY} · min_occupancy={report.min_occupancy} · "
+            f"max_move={report.max_move}"
+        ),
+        side=report.side,
+        by_minute=by_minute,
+        outcome_minutes=report.minutes,
+        abstention_attr="abstained",
+    )
+
+
 def _print_all_research_table(summaries) -> None:
     minutes = []
     for item in summaries:
@@ -1420,11 +1515,20 @@ def research_all(
         Decimal,
         typer.Option(
             "--max-move",
-            help="s16 only: abstain when |close_M − open_1| ≥ max-move.",
+            help="s16/s17: abstain when |close_M − open_1| ≥ max-move.",
             parser=parse_positive_decimal,
             metavar="USD",
         ),
     ] = DEFAULT_MAX_MOVE,
+    min_occupancy: Annotated[
+        Decimal,
+        typer.Option(
+            "--min-occupancy",
+            help="s17 only: minimum unique-modal share of closes 1..M.",
+            parser=parse_occupancy,
+            metavar="0..1",
+        ),
+    ] = DEFAULT_MIN_OCCUPANCY,
     start: Annotated[
         datetime | None,
         typer.Option(
@@ -1443,10 +1547,10 @@ def research_all(
     ] = None,
     workers: Annotated[
         int | None,
-        typer.Option(help="Process pool size (default: min(16, CPUs))."),
+        typer.Option(help="Process pool size (default: min(17, CPUs))."),
     ] = None,
 ) -> None:
-    """Run s1–s16 quote-sim in parallel; one table per checkpoint minute."""
+    """Run s1–s17 quote-sim in parallel; one table per checkpoint minute."""
     require_gate()
     minute_list = _research_common_options(db, start, end, minutes)
     _validate_minutes_for_all(minute_list)
@@ -1467,6 +1571,7 @@ def research_all(
             move=move,
             dwell=dwell,
             max_move=max_move,
+            min_occupancy=min_occupancy,
             workers=workers,
         )
     except Exception as exc:

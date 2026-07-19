@@ -31,6 +31,7 @@ from bob.research import (
     s14,
     s15,
     s16,
+    s17,
 )
 from bob.research.pnl import QuoteSimReport, score_trades, score_trades_by_minute
 from bob.research.s1 import Side
@@ -39,6 +40,7 @@ from bob.research.s13 import DEFAULT_P_STAR
 from bob.research.s14 import DEFAULT_Q_STAR
 from bob.research.s15 import DEFAULT_DWELL, DEFAULT_MOVE
 from bob.research.s16 import DEFAULT_MAX_MOVE
+from bob.research.s17 import DEFAULT_MIN_OCCUPANCY
 
 STRATEGY_MODULES = {
     "s1": s1,
@@ -57,6 +59,7 @@ STRATEGY_MODULES = {
     "s14": s14,
     "s15": s15,
     "s16": s16,
+    "s17": s17,
 }
 
 STRATEGY_NAMES = tuple(STRATEGY_MODULES)
@@ -99,6 +102,7 @@ def evaluate_strategy(
     move: Decimal = DEFAULT_MOVE,
     dwell: int = DEFAULT_DWELL,
     max_move: Decimal = DEFAULT_MAX_MOVE,
+    min_occupancy: Decimal = DEFAULT_MIN_OCCUPANCY,
 ) -> Any:
     module = STRATEGY_MODULES[name]
     kwargs: dict[str, Any] = {
@@ -119,6 +123,9 @@ def evaluate_strategy(
         kwargs["dwell"] = dwell
     if name == "s16":
         kwargs["max_move"] = max_move
+    if name == "s17":
+        kwargs["max_move"] = max_move
+        kwargs["min_occupancy"] = min_occupancy
     return module.evaluate(connection, **kwargs)
 
 
@@ -160,6 +167,7 @@ def run_strategy_on_db(
     move: Decimal = DEFAULT_MOVE,
     dwell: int = DEFAULT_DWELL,
     max_move: Decimal = DEFAULT_MAX_MOVE,
+    min_occupancy: Decimal = DEFAULT_MIN_OCCUPANCY,
     readonly: bool = False,
 ) -> StrategySummary:
     module = STRATEGY_MODULES[name]
@@ -178,6 +186,7 @@ def run_strategy_on_db(
             move=move,
             dwell=dwell,
             max_move=max_move,
+            min_occupancy=min_occupancy,
         )
     finally:
         connection.close()
@@ -198,6 +207,7 @@ def run_strategy_pnl_on_db(
     move: Decimal = DEFAULT_MOVE,
     dwell: int = DEFAULT_DWELL,
     max_move: Decimal = DEFAULT_MAX_MOVE,
+    min_occupancy: Decimal = DEFAULT_MIN_OCCUPANCY,
     readonly: bool = False,
 ) -> StrategyPnlSummary:
     module = STRATEGY_MODULES[name]
@@ -216,6 +226,7 @@ def run_strategy_pnl_on_db(
             move=move,
             dwell=dwell,
             max_move=max_move,
+            min_occupancy=min_occupancy,
         )
         pnl = score_trades(connection, report.trades)
         by_minute = score_trades_by_minute(connection, report.trades, minutes)
@@ -244,6 +255,7 @@ def run_all_strategies(
     move: Decimal = DEFAULT_MOVE,
     dwell: int = DEFAULT_DWELL,
     max_move: Decimal = DEFAULT_MAX_MOVE,
+    min_occupancy: Decimal = DEFAULT_MIN_OCCUPANCY,
     workers: int | None = None,
     names: Sequence[str] = STRATEGY_NAMES,
 ) -> tuple[StrategySummary, ...]:
@@ -274,6 +286,7 @@ def run_all_strategies(
         "move": move,
         "dwell": dwell,
         "max_move": max_move,
+        "min_occupancy": min_occupancy,
     }
     results: dict[str, StrategySummary] = {}
     with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -299,6 +312,7 @@ def run_all_strategy_pnl(
     move: Decimal = DEFAULT_MOVE,
     dwell: int = DEFAULT_DWELL,
     max_move: Decimal = DEFAULT_MAX_MOVE,
+    min_occupancy: Decimal = DEFAULT_MIN_OCCUPANCY,
     workers: int | None = None,
     names: Sequence[str] = STRATEGY_NAMES,
 ) -> tuple[StrategyPnlSummary, ...]:
@@ -328,6 +342,7 @@ def run_all_strategy_pnl(
         "move": move,
         "dwell": dwell,
         "max_move": max_move,
+        "min_occupancy": min_occupancy,
     }
     results: dict[str, StrategyPnlSummary] = {}
     with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -354,6 +369,7 @@ def _worker_strategy(name: str, payload: dict[str, Any]) -> StrategySummary:
         move=payload["move"],
         dwell=payload["dwell"],
         max_move=payload["max_move"],
+        min_occupancy=payload["min_occupancy"],
         readonly=True,
     )
 
@@ -372,5 +388,6 @@ def _worker_pnl(name: str, payload: dict[str, Any]) -> StrategyPnlSummary:
         move=payload["move"],
         dwell=payload["dwell"],
         max_move=payload["max_move"],
+        min_occupancy=payload["min_occupancy"],
         readonly=True,
     )
