@@ -14,7 +14,7 @@ SPDX-License-Identifier: CC-BY-SA-4.0
 > It is public for my own convenience and not because I care about sharing it with people.
 >
 > This is just a hobby trading bot thats fun for me. But I vibe code this repo too.
-> I think that you might not be sane if you actually use this, so dont.
+> I think that you might not be right in the head if you actually use this, so dont.
 
 ## License
 
