@@ -86,6 +86,16 @@ from bob.research.s14 import DEFAULT_Q_STAR
 from bob.research.s15 import DEFAULT_DWELL, DEFAULT_MOVE
 from bob.research.s16 import DEFAULT_MAX_MOVE
 from bob.research.s17 import DEFAULT_MIN_OCCUPANCY
+from bob.research.tune import (
+    DEFAULT_MIN_FRAC,
+    DEFAULT_MINUTES as TUNE_DEFAULT_MINUTES,
+    DEFAULT_STRATEGIES,
+    DEFAULT_TRIALS,
+    TuneConfig,
+    parse_strategy_names,
+    print_tune_results,
+    run_tune,
+)
 
 DEFAULT_DB = Path("data/bob.sqlite")
 
@@ -716,6 +726,23 @@ def parse_take_pct(value: str) -> Decimal:
     if not take_pct.is_finite() or take_pct <= 0:
         raise typer.BadParameter("take-pct must be a positive decimal")
     return take_pct
+
+
+def parse_min_frac(value: str) -> Decimal:
+    try:
+        min_frac = Decimal(value)
+    except InvalidOperation as exc:
+        raise typer.BadParameter("min-frac must be a decimal in (0, 1]") from exc
+    if not min_frac.is_finite() or not (Decimal("0") < min_frac <= Decimal("1")):
+        raise typer.BadParameter("min-frac must be a decimal in (0, 1]")
+    return min_frac
+
+
+def parse_strategies(value: str) -> tuple[str, ...]:
+    try:
+        return parse_strategy_names(value)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 def parse_side(value: str) -> Side:
@@ -2056,6 +2083,99 @@ def research_all(
     _print_all_research_table(
         summaries, stop_bid=stop_bid, take_pct=take_pct
     )
+
+
+@research_app.command("tune")
+def research_tune(
+    db: Annotated[
+        Path,
+        typer.Option(help="SQLite path."),
+    ] = DEFAULT_DB,
+    minutes: Annotated[
+        str,
+        typer.Option(
+            help="Comma-separated checkpoint minutes Optuna may choose."
+        ),
+    ] = ",".join(str(m) for m in TUNE_DEFAULT_MINUTES),
+    strategies: Annotated[
+        str,
+        typer.Option(help="Comma-separated strategies Optuna may choose."),
+    ] = ",".join(DEFAULT_STRATEGIES),
+    side: Annotated[
+        Side,
+        typer.Option(
+            help="Buy YES or NO on the selected bracket.",
+            parser=parse_side,
+            metavar="yes|no",
+        ),
+    ] = "yes",
+    trials: Annotated[
+        int,
+        typer.Option(help="Number of Optuna trials."),
+    ] = DEFAULT_TRIALS,
+    min_frac: Annotated[
+        Decimal,
+        typer.Option(
+            "--min-frac",
+            help="Require quote-eligible n ≥ ceil(min-frac × complete events).",
+            parser=parse_min_frac,
+            metavar="0..1",
+        ),
+    ] = DEFAULT_MIN_FRAC,
+    workers: Annotated[
+        int,
+        typer.Option(help="Optuna parallel jobs (default 1)."),
+    ] = 1,
+    start: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC start of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(
+            help="UTC end of event close_ts range [start, end).",
+            parser=parse_iso_datetime,
+            metavar="ISO",
+        ),
+    ] = None,
+) -> None:
+    """Optuna tune: minute + stop/take overlays (frozen decide-rule defaults)."""
+    require_gate()
+    minute_list = _research_common_options(db, start, end, minutes)
+    try:
+        strategy_list = parse_strategies(strategies)
+    except typer.BadParameter as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+    if trials < 1:
+        console.print("[red]Error:[/red] --trials must be >= 1")
+        raise typer.Exit(code=2)
+    if workers < 1:
+        console.print("[red]Error:[/red] --workers must be >= 1")
+        raise typer.Exit(code=2)
+    try:
+        result = run_tune(
+            TuneConfig(
+                db=db,
+                strategies=strategy_list,
+                minutes=minute_list,
+                side=side,
+                start=start,
+                end=end,
+                min_frac=min_frac,
+                n_trials=trials,
+                n_jobs=workers,
+            ),
+            console=console,
+        )
+    except Exception as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    print_tune_results(result, console=console)
 
 
 def main() -> None:
