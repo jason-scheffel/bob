@@ -4,7 +4,13 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from bob.db import MinuteBar, store_btc_candles, utc_hour_starts
+from bob.db import (
+    MarketQuoteBar,
+    MinuteBar,
+    store_btc_candles,
+    store_market_candles,
+    utc_hour_starts,
+)
 from bob.kalshi import STATUS_COMPLETE, Bracket, Event, SettledEvent
 from bob.research.common import checkpoint_end_ts
 
@@ -58,6 +64,30 @@ def research_flat_bars(minutes: range, price: str) -> list[MinuteBar]:
         )
         for minute in minutes
     ]
+
+
+def seed_research_yes_quote(
+    connection,
+    *,
+    ticker: str,
+    minute: int,
+    bid: str = "0.40",
+    ask: str = "0.45",
+    close_ts: datetime | None = None,
+) -> None:
+    """Seed one YES bid/ask close so quote-sim CLI tests are not excluded."""
+    when = RESEARCH_CLOSE if close_ts is None else close_ts
+    store_market_candles(
+        connection,
+        [
+            MarketQuoteBar(
+                ticker=ticker,
+                end_ts=checkpoint_end_ts(when, minute),
+                yes_bid_close=bid,
+                yes_ask_close=ask,
+            )
+        ],
+    )
 
 
 def seed_complete_candle_hours(

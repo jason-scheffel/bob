@@ -16,7 +16,7 @@ from bob.db import (
 )
 from bob.research.common import checkpoint_end_ts
 from bob.research.s9 import STRATEGY, evaluate, horizon_minutes
-from helpers import RESEARCH_CLOSE, research_settled
+from helpers import RESEARCH_CLOSE, research_settled, seed_research_yes_quote
 
 runner = CliRunner()
 
@@ -79,6 +79,7 @@ def test_research_s9_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     initialize_schema(connection)
     store_settled_events(connection, [research_settled(expiration="150", winner="a")])
     _seed_horizon(connection)
+    seed_research_yes_quote(connection, ticker="KXBTC-99JUN0108-A", minute=55)
     connection.close()
 
     result = runner.invoke(

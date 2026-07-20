@@ -26,6 +26,7 @@ from bob.research.common import (
     price_in_bracket,
 )
 from bob.research.s1 import STRATEGY, evaluate
+from helpers import seed_research_yes_quote
 
 runner = CliRunner()
 CLOSE = datetime(2099, 6, 1, 12, 0, tzinfo=timezone.utc)
@@ -362,6 +363,12 @@ def test_research_s1_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     initialize_schema(connection)
     store_settled_events(connection, [_settled()])
     store_btc_candles(connection, [_bar(checkpoint_end_ts(CLOSE, 45), "150")])
+    seed_research_yes_quote(
+        connection,
+        ticker="KXBTC-99JUN0108-MID",
+        minute=45,
+        close_ts=CLOSE,
+    )
     connection.close()
 
     result = runner.invoke(

@@ -39,7 +39,12 @@ from bob.research import (
     s22,
     s23,
 )
-from bob.research.pnl import QuoteSimReport, score_trades, score_trades_by_minute
+from bob.research.pnl import (
+    DEFAULT_STOP_FROM,
+    QuoteSimReport,
+    score_trades,
+    score_trades_by_minute,
+)
 from bob.research.s1 import Side
 from bob.research.s12 import DEFAULT_TAU
 from bob.research.s13 import DEFAULT_P_STAR
@@ -220,6 +225,8 @@ def run_strategy_pnl_on_db(
     dwell: int = DEFAULT_DWELL,
     max_move: Decimal = DEFAULT_MAX_MOVE,
     min_occupancy: Decimal = DEFAULT_MIN_OCCUPANCY,
+    stop_bid: Decimal | None = None,
+    stop_from: int = DEFAULT_STOP_FROM,
     readonly: bool = False,
 ) -> StrategyPnlSummary:
     module = STRATEGY_MODULES[name]
@@ -240,8 +247,19 @@ def run_strategy_pnl_on_db(
             max_move=max_move,
             min_occupancy=min_occupancy,
         )
-        pnl = score_trades(connection, report.trades)
-        by_minute = score_trades_by_minute(connection, report.trades, minutes)
+        pnl = score_trades(
+            connection,
+            report.trades,
+            stop_bid=stop_bid,
+            stop_from=stop_from,
+        )
+        by_minute = score_trades_by_minute(
+            connection,
+            report.trades,
+            minutes,
+            stop_bid=stop_bid,
+            stop_from=stop_from,
+        )
     finally:
         connection.close()
     return StrategyPnlSummary(
@@ -325,6 +343,8 @@ def run_all_strategy_pnl(
     dwell: int = DEFAULT_DWELL,
     max_move: Decimal = DEFAULT_MAX_MOVE,
     min_occupancy: Decimal = DEFAULT_MIN_OCCUPANCY,
+    stop_bid: Decimal | None = None,
+    stop_from: int = DEFAULT_STOP_FROM,
     workers: int | None = None,
     names: Sequence[str] = STRATEGY_NAMES,
 ) -> tuple[StrategyPnlSummary, ...]:
@@ -355,6 +375,8 @@ def run_all_strategy_pnl(
         "dwell": dwell,
         "max_move": max_move,
         "min_occupancy": min_occupancy,
+        "stop_bid": stop_bid,
+        "stop_from": stop_from,
     }
     results: dict[str, StrategyPnlSummary] = {}
     with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -401,5 +423,7 @@ def _worker_pnl(name: str, payload: dict[str, Any]) -> StrategyPnlSummary:
         dwell=payload["dwell"],
         max_move=payload["max_move"],
         min_occupancy=payload["min_occupancy"],
+        stop_bid=payload["stop_bid"],
+        stop_from=payload["stop_from"],
         readonly=True,
     )

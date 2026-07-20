@@ -26,6 +26,7 @@ from bob.research.s2 import (
     path_stays_in_bracket,
     evaluate,
 )
+from helpers import seed_research_yes_quote
 
 runner = CliRunner()
 CLOSE = datetime(2099, 6, 1, 12, 0, tzinfo=timezone.utc)
@@ -208,6 +209,12 @@ def test_research_s2_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     initialize_schema(connection)
     store_settled_events(connection, [_settled()])
     _seed_stable_center(connection)
+    seed_research_yes_quote(
+        connection,
+        ticker="KXBTC-99JUN0108-MID",
+        minute=55,
+        close_ts=CLOSE,
+    )
     connection.close()
 
     result = runner.invoke(

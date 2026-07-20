@@ -77,7 +77,7 @@ from bob.research import (
     s22,
     s23,
 )
-from bob.research.pnl import score_trades_by_minute
+from bob.research.pnl import DEFAULT_STOP_FROM, score_trades_by_minute
 from bob.research.runner import run_all_strategy_pnl
 from bob.research.s1 import Side
 from bob.research.s12 import DEFAULT_TAU
@@ -688,6 +688,26 @@ def parse_occupancy(value: str) -> Decimal:
     return occupancy
 
 
+def parse_stop_bid(value: str) -> Decimal:
+    try:
+        stop_bid = Decimal(value)
+    except InvalidOperation as exc:
+        raise typer.BadParameter("stop-bid must be a decimal in [0, 1]") from exc
+    if not stop_bid.is_finite() or not (Decimal("0") <= stop_bid <= Decimal("1")):
+        raise typer.BadParameter("stop-bid must be a decimal in [0, 1]")
+    return stop_bid
+
+
+def parse_stop_from(value: str) -> int:
+    try:
+        stop_from = int(value)
+    except ValueError as exc:
+        raise typer.BadParameter("stop-from must be an integer in 1..59") from exc
+    if not 1 <= stop_from <= 59:
+        raise typer.BadParameter(f"stop-from must be in 1..59, got {stop_from}")
+    return stop_from
+
+
 def parse_side(value: str) -> Side:
     normalized = value.strip().lower()
     if normalized == "yes":
@@ -697,11 +717,20 @@ def parse_side(value: str) -> Side:
     raise typer.BadParameter("side must be 'yes' or 'no'")
 
 
-def _print_research_banner() -> None:
+def _print_research_banner(
+    *,
+    stop_bid: Decimal | None = None,
+    stop_from: int = DEFAULT_STOP_FROM,
+) -> None:
     console.print(
         "[dim]quote-sim · 1 contract · YES@ask / NO@(1−bid) · "
         "gross only (no fees) · minute close ≠ proven fill[/dim]"
     )
+    if stop_bid is not None:
+        console.print(
+            f"[dim]stop-bid≤{stop_bid} from M{stop_from} · "
+            "YES@bid / NO@(1−ask) exit[/dim]"
+        )
 
 
 def _fmt_return(pnl) -> str:
@@ -724,8 +753,11 @@ def _print_research_tables(
     by_minute,
     outcome_minutes,
     abstention_attr: str | None = None,
+    stop_bid: Decimal | None = None,
+    stop_from: int = DEFAULT_STOP_FROM,
 ) -> None:
-    _print_research_banner()
+    _print_research_banner(stop_bid=stop_bid, stop_from=stop_from)
+    show_stopped = stop_bid is not None
     table = Table(title=f"{strategy} · {summary} · side={side}")
     table.add_column("minute", justify="right")
     table.add_column("n", justify="right")
@@ -734,6 +766,8 @@ def _print_research_tables(
     table.add_column("gross", justify="right")
     table.add_column("return", justify="right")
     table.add_column("win_rate", justify="right")
+    if show_stopped:
+        table.add_column("stopped", justify="right")
     if abstention_attr is not None:
         table.add_column("abstained", justify="right")
     outcome_by_minute = {stats.minute: stats for stats in outcome_minutes}
@@ -747,6 +781,8 @@ def _print_research_tables(
             _fmt_return(pnl),
             _fmt_win_rate(pnl),
         ]
+        if show_stopped:
+            row.append(str(pnl.stopped))
         if abstention_attr is not None:
             stats = outcome_by_minute.get(minute)
             row.append("—" if stats is None else str(getattr(stats, abstention_attr)))
@@ -834,6 +870,27 @@ def _register_research_strategy(
                 metavar="yes|no",
             ),
         ] = "yes",
+        stop_bid: Annotated[
+            Decimal | None,
+            typer.Option(
+                "--stop-bid",
+                help=(
+                    "Optional stop: exit when side mark ≤ this "
+                    "(YES@bid / NO@(1−ask)); omit to hold to settlement."
+                ),
+                parser=parse_stop_bid,
+                metavar="0..1",
+            ),
+        ] = None,
+        stop_from: Annotated[
+            int,
+            typer.Option(
+                "--stop-from",
+                help="First minute to arm the stop (ignored without --stop-bid).",
+                parser=parse_stop_from,
+                metavar="1..59",
+            ),
+        ] = DEFAULT_STOP_FROM,
         start: Annotated[
             datetime | None,
             typer.Option(
@@ -863,7 +920,11 @@ def _register_research_strategy(
                 end=end,
             )
             by_minute = score_trades_by_minute(
-                connection, report.trades, minute_list
+                connection,
+                report.trades,
+                minute_list,
+                stop_bid=stop_bid,
+                stop_from=stop_from,
             )
         finally:
             connection.close()
@@ -874,6 +935,8 @@ def _register_research_strategy(
             by_minute=by_minute,
             outcome_minutes=report.minutes,
             abstention_attr="abstained" if has_abstentions else None,
+            stop_bid=stop_bid,
+            stop_from=stop_from,
         )
 
     command.__doc__ = docstring
@@ -978,6 +1041,27 @@ def research_s12(
             metavar="0..1",
         ),
     ] = DEFAULT_TAU,
+    stop_bid: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--stop-bid",
+            help=(
+                "Optional stop: exit when side mark ≤ this "
+                "(YES@bid / NO@(1−ask)); omit to hold to settlement."
+            ),
+            parser=parse_stop_bid,
+            metavar="0..1",
+        ),
+    ] = None,
+    stop_from: Annotated[
+        int,
+        typer.Option(
+            "--stop-from",
+            help="First minute to arm the stop (ignored without --stop-bid).",
+            parser=parse_stop_from,
+            metavar="1..59",
+        ),
+    ] = DEFAULT_STOP_FROM,
     start: Annotated[
         datetime | None,
         typer.Option(
@@ -1008,7 +1092,13 @@ def research_s12(
             start=start,
             end=end,
         )
-        by_minute = score_trades_by_minute(connection, report.trades, minute_list)
+        by_minute = score_trades_by_minute(
+            connection,
+            report.trades,
+            minute_list,
+            stop_bid=stop_bid,
+            stop_from=stop_from,
+        )
     finally:
         connection.close()
     _print_research_tables(
@@ -1018,6 +1108,8 @@ def research_s12(
         by_minute=by_minute,
         outcome_minutes=report.minutes,
         abstention_attr="abstained",
+        stop_bid=stop_bid,
+        stop_from=stop_from,
     )
 
 
@@ -1048,6 +1140,27 @@ def research_s13(
             metavar="0..1",
         ),
     ] = DEFAULT_P_STAR,
+    stop_bid: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--stop-bid",
+            help=(
+                "Optional stop: exit when side mark ≤ this "
+                "(YES@bid / NO@(1−ask)); omit to hold to settlement."
+            ),
+            parser=parse_stop_bid,
+            metavar="0..1",
+        ),
+    ] = None,
+    stop_from: Annotated[
+        int,
+        typer.Option(
+            "--stop-from",
+            help="First minute to arm the stop (ignored without --stop-bid).",
+            parser=parse_stop_from,
+            metavar="1..59",
+        ),
+    ] = DEFAULT_STOP_FROM,
     start: Annotated[
         datetime | None,
         typer.Option(
@@ -1078,7 +1191,13 @@ def research_s13(
             start=start,
             end=end,
         )
-        by_minute = score_trades_by_minute(connection, report.trades, minute_list)
+        by_minute = score_trades_by_minute(
+            connection,
+            report.trades,
+            minute_list,
+            stop_bid=stop_bid,
+            stop_from=stop_from,
+        )
     finally:
         connection.close()
     _print_research_tables(
@@ -1088,6 +1207,8 @@ def research_s13(
         by_minute=by_minute,
         outcome_minutes=report.minutes,
         abstention_attr="abstained",
+        stop_bid=stop_bid,
+        stop_from=stop_from,
     )
 
 
@@ -1127,6 +1248,27 @@ def research_s14(
             metavar="0..1",
         ),
     ] = DEFAULT_Q_STAR,
+    stop_bid: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--stop-bid",
+            help=(
+                "Optional stop: exit when side mark ≤ this "
+                "(YES@bid / NO@(1−ask)); omit to hold to settlement."
+            ),
+            parser=parse_stop_bid,
+            metavar="0..1",
+        ),
+    ] = None,
+    stop_from: Annotated[
+        int,
+        typer.Option(
+            "--stop-from",
+            help="First minute to arm the stop (ignored without --stop-bid).",
+            parser=parse_stop_from,
+            metavar="1..59",
+        ),
+    ] = DEFAULT_STOP_FROM,
     start: Annotated[
         datetime | None,
         typer.Option(
@@ -1158,7 +1300,13 @@ def research_s14(
             start=start,
             end=end,
         )
-        by_minute = score_trades_by_minute(connection, report.trades, minute_list)
+        by_minute = score_trades_by_minute(
+            connection,
+            report.trades,
+            minute_list,
+            stop_bid=stop_bid,
+            stop_from=stop_from,
+        )
     finally:
         connection.close()
     _print_research_tables(
@@ -1171,6 +1319,8 @@ def research_s14(
         by_minute=by_minute,
         outcome_minutes=report.minutes,
         abstention_attr="abstained",
+        stop_bid=stop_bid,
+        stop_from=stop_from,
     )
 
 
@@ -1208,6 +1358,27 @@ def research_s15(
             metavar="N",
         ),
     ] = DEFAULT_DWELL,
+    stop_bid: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--stop-bid",
+            help=(
+                "Optional stop: exit when side mark ≤ this "
+                "(YES@bid / NO@(1−ask)); omit to hold to settlement."
+            ),
+            parser=parse_stop_bid,
+            metavar="0..1",
+        ),
+    ] = None,
+    stop_from: Annotated[
+        int,
+        typer.Option(
+            "--stop-from",
+            help="First minute to arm the stop (ignored without --stop-bid).",
+            parser=parse_stop_from,
+            metavar="1..59",
+        ),
+    ] = DEFAULT_STOP_FROM,
     start: Annotated[
         datetime | None,
         typer.Option(
@@ -1239,7 +1410,13 @@ def research_s15(
             start=start,
             end=end,
         )
-        by_minute = score_trades_by_minute(connection, report.trades, minute_list)
+        by_minute = score_trades_by_minute(
+            connection,
+            report.trades,
+            minute_list,
+            stop_bid=stop_bid,
+            stop_from=stop_from,
+        )
     finally:
         connection.close()
     _print_research_tables(
@@ -1251,6 +1428,8 @@ def research_s15(
         by_minute=by_minute,
         outcome_minutes=report.minutes,
         abstention_attr="abstained",
+        stop_bid=stop_bid,
+        stop_from=stop_from,
     )
 
 
@@ -1281,6 +1460,27 @@ def research_s16(
             metavar="USD",
         ),
     ] = DEFAULT_MAX_MOVE,
+    stop_bid: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--stop-bid",
+            help=(
+                "Optional stop: exit when side mark ≤ this "
+                "(YES@bid / NO@(1−ask)); omit to hold to settlement."
+            ),
+            parser=parse_stop_bid,
+            metavar="0..1",
+        ),
+    ] = None,
+    stop_from: Annotated[
+        int,
+        typer.Option(
+            "--stop-from",
+            help="First minute to arm the stop (ignored without --stop-bid).",
+            parser=parse_stop_from,
+            metavar="1..59",
+        ),
+    ] = DEFAULT_STOP_FROM,
     start: Annotated[
         datetime | None,
         typer.Option(
@@ -1311,7 +1511,13 @@ def research_s16(
             start=start,
             end=end,
         )
-        by_minute = score_trades_by_minute(connection, report.trades, minute_list)
+        by_minute = score_trades_by_minute(
+            connection,
+            report.trades,
+            minute_list,
+            stop_bid=stop_bid,
+            stop_from=stop_from,
+        )
     finally:
         connection.close()
     _print_research_tables(
@@ -1321,6 +1527,8 @@ def research_s16(
         by_minute=by_minute,
         outcome_minutes=report.minutes,
         abstention_attr="abstained",
+        stop_bid=stop_bid,
+        stop_from=stop_from,
     )
 
 
@@ -1360,6 +1568,27 @@ def research_s17(
             metavar="USD",
         ),
     ] = DEFAULT_MAX_MOVE,
+    stop_bid: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--stop-bid",
+            help=(
+                "Optional stop: exit when side mark ≤ this "
+                "(YES@bid / NO@(1−ask)); omit to hold to settlement."
+            ),
+            parser=parse_stop_bid,
+            metavar="0..1",
+        ),
+    ] = None,
+    stop_from: Annotated[
+        int,
+        typer.Option(
+            "--stop-from",
+            help="First minute to arm the stop (ignored without --stop-bid).",
+            parser=parse_stop_from,
+            metavar="1..59",
+        ),
+    ] = DEFAULT_STOP_FROM,
     start: Annotated[
         datetime | None,
         typer.Option(
@@ -1391,7 +1620,13 @@ def research_s17(
             start=start,
             end=end,
         )
-        by_minute = score_trades_by_minute(connection, report.trades, minute_list)
+        by_minute = score_trades_by_minute(
+            connection,
+            report.trades,
+            minute_list,
+            stop_bid=stop_bid,
+            stop_from=stop_from,
+        )
     finally:
         connection.close()
     _print_research_tables(
@@ -1404,6 +1639,8 @@ def research_s17(
         by_minute=by_minute,
         outcome_minutes=report.minutes,
         abstention_attr="abstained",
+        stop_bid=stop_bid,
+        stop_from=stop_from,
     )
 
 
@@ -1445,7 +1682,11 @@ _register_research_strategy(
 )
 
 
-def _print_all_research_table(summaries) -> None:
+def _print_all_research_table(
+    summaries,
+    *,
+    stop_bid: Decimal | None = None,
+) -> None:
     minutes = []
     for item in summaries:
         for minute, _pnl in item.by_minute:
@@ -1456,6 +1697,7 @@ def _print_all_research_table(summaries) -> None:
         table.add_column("strategy")
         console.print(table)
         return
+    show_stopped = stop_bid is not None
     for minute in minutes:
         table = Table(title=f"research all · M{minute}")
         table.add_column("strategy")
@@ -1465,6 +1707,8 @@ def _print_all_research_table(summaries) -> None:
         table.add_column("gross", justify="right")
         table.add_column("return", justify="right")
         table.add_column("win_rate", justify="right")
+        if show_stopped:
+            table.add_column("stopped", justify="right")
         for item in summaries:
             pnl = next(
                 (report for m, report in item.by_minute if m == minute),
@@ -1472,7 +1716,7 @@ def _print_all_research_table(summaries) -> None:
             )
             if pnl is None:
                 continue
-            table.add_row(
+            row = [
                 item.strategy,
                 str(pnl.quote_eligible),
                 str(pnl.quote_excluded),
@@ -1480,7 +1724,10 @@ def _print_all_research_table(summaries) -> None:
                 f"{pnl.gross:.2f}",
                 _fmt_return(pnl),
                 _fmt_win_rate(pnl),
-            )
+            ]
+            if show_stopped:
+                row.append(str(pnl.stopped))
+            table.add_row(*row)
         console.print(table)
 
 
@@ -1573,6 +1820,27 @@ def research_all(
             metavar="0..1",
         ),
     ] = DEFAULT_MIN_OCCUPANCY,
+    stop_bid: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--stop-bid",
+            help=(
+                "Optional stop: exit when side mark ≤ this "
+                "(YES@bid / NO@(1−ask)); omit to hold to settlement."
+            ),
+            parser=parse_stop_bid,
+            metavar="0..1",
+        ),
+    ] = None,
+    stop_from: Annotated[
+        int,
+        typer.Option(
+            "--stop-from",
+            help="First minute to arm the stop (ignored without --stop-bid).",
+            parser=parse_stop_from,
+            metavar="1..59",
+        ),
+    ] = DEFAULT_STOP_FROM,
     start: Annotated[
         datetime | None,
         typer.Option(
@@ -1601,7 +1869,7 @@ def research_all(
     if workers is not None and workers < 1:
         console.print("[red]Error:[/red] --workers must be >= 1")
         raise typer.Exit(code=2)
-    _print_research_banner()
+    _print_research_banner(stop_bid=stop_bid, stop_from=stop_from)
     try:
         summaries = run_all_strategy_pnl(
             db,
@@ -1616,12 +1884,14 @@ def research_all(
             dwell=dwell,
             max_move=max_move,
             min_occupancy=min_occupancy,
+            stop_bid=stop_bid,
+            stop_from=stop_from,
             workers=workers,
         )
     except Exception as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
-    _print_all_research_table(summaries)
+    _print_all_research_table(summaries, stop_bid=stop_bid)
 
 
 def main() -> None:

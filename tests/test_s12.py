@@ -22,7 +22,7 @@ from bob.research.s12 import (
     evaluate,
     print_escape_probability,
 )
-from helpers import RESEARCH_CLOSE, research_settled
+from helpers import RESEARCH_CLOSE, research_settled, seed_research_yes_quote
 
 runner = CliRunner()
 
@@ -108,6 +108,7 @@ def test_research_s12_cli_tau(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     initialize_schema(connection)
     store_settled_events(connection, [research_settled(expiration="150", winner="a")])
     _seed_closes(connection, {minute: "150" for minute in range(1, 56)})
+    seed_research_yes_quote(connection, ticker="KXBTC-99JUN0108-A", minute=55)
     connection.close()
 
     result = runner.invoke(

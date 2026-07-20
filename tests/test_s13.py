@@ -23,7 +23,7 @@ from bob.research.s13 import (
     evaluate,
     terminal_win_probability,
 )
-from helpers import RESEARCH_CLOSE, research_settled
+from helpers import RESEARCH_CLOSE, research_settled, seed_research_yes_quote
 
 runner = CliRunner()
 
@@ -117,6 +117,7 @@ def test_research_s13_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     prior = RESEARCH_CLOSE - timedelta(hours=1)
     _seed_hour(connection, prior, price="150", high="151", low="149")
     _seed_hour(connection, RESEARCH_CLOSE, price="150", high="151", low="149")
+    seed_research_yes_quote(connection, ticker="KXBTC-99JUN0108-A", minute=55)
     connection.close()
 
     result = runner.invoke(
