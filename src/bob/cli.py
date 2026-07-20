@@ -87,6 +87,7 @@ from bob.research.s15 import DEFAULT_DWELL, DEFAULT_MOVE
 from bob.research.s16 import DEFAULT_MAX_MOVE
 from bob.research.s17 import DEFAULT_MIN_OCCUPANCY
 from bob.research.tune import (
+    DEFAULT_BANKROLL,
     DEFAULT_MIN_FRAC,
     DEFAULT_MINUTES as TUNE_DEFAULT_MINUTES,
     DEFAULT_STRATEGIES,
@@ -2122,6 +2123,14 @@ def research_tune(
             metavar="0..1",
         ),
     ] = DEFAULT_MIN_FRAC,
+    bankroll: Annotated[
+        Decimal,
+        typer.Option(
+            help="Starting cash for 1-contract ruin walk (reject if cash dies).",
+            parser=parse_positive_decimal,
+            metavar="USD",
+        ),
+    ] = DEFAULT_BANKROLL,
     workers: Annotated[
         int,
         typer.Option(help="Optuna parallel jobs (default 1)."),
@@ -2169,6 +2178,7 @@ def research_tune(
                 min_frac=min_frac,
                 n_trials=trials,
                 n_jobs=workers,
+                bankroll=bankroll,
             ),
             console=console,
         )

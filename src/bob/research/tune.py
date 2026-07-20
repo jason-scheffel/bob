@@ -32,6 +32,7 @@ from rich.table import Table
 from bob.browse import load_events
 from bob.db import connect_readonly
 from bob.research.common import load_all_complete_events
+from bob.research.pnl import QuoteSimTrade
 from bob.research.runner import STRATEGY_MODULES, run_strategy_pnl_on_db
 from bob.research.s1 import Side
 
@@ -40,8 +41,10 @@ DEFAULT_MINUTES = (40, 45, 50, 55)
 DEFAULT_MIN_FRAC = Decimal("0.25")
 DEFAULT_TRIALS = 200
 DEFAULT_TOP_K = 5
+DEFAULT_BANKROLL = Decimal("100")
 
 _REJECT = float("-inf")
+_ZERO = Decimal("0")
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +58,7 @@ class TuneConfig:
     min_frac: Decimal
     n_trials: int
     n_jobs: int
+    bankroll: Decimal = DEFAULT_BANKROLL
     top_k: int = DEFAULT_TOP_K
 
 
@@ -113,6 +117,31 @@ def min_eligible_trades(*, n_events: int, min_frac: Decimal) -> int:
     return int(
         (min_frac * Decimal(n_events)).to_integral_value(rounding=ROUND_CEILING)
     )
+
+
+def simulate_bankroll(
+    trades: Sequence[QuoteSimTrade],
+    *,
+    start: Decimal,
+) -> tuple[bool, Decimal]:
+    """Walk 1-contract trades in time; return (survived, final_cash)."""
+    if not isinstance(start, Decimal):
+        start = Decimal(str(start))
+    if not start.is_finite() or start <= _ZERO:
+        raise ValueError(f"bankroll start must be a positive Decimal, got {start}")
+    cash = start
+    ordered = sorted(
+        trades,
+        key=lambda t: (t.observation.end_ts, t.observation.event_ticker),
+    )
+    for trade in ordered:
+        if cash < trade.premium:
+            return False, cash
+        cash -= trade.premium
+        cash += trade.settlement
+        if cash <= _ZERO:
+            return False, cash
+    return True, cash
 
 
 def _suggest_overlays(trial: optuna.Trial) -> tuple[Decimal | None, Decimal | None, int]:
@@ -174,6 +203,12 @@ def evaluate_trial(
         return _REJECT
     if pnl.premium <= 0:
         trial.set_user_attr("reject", "zero_premium")
+        return _REJECT
+    survived, final_cash = simulate_bankroll(pnl.trades, start=config.bankroll)
+    trial.set_user_attr("bankroll", str(config.bankroll))
+    trial.set_user_attr("final_cash", str(final_cash))
+    if not survived:
+        trial.set_user_attr("reject", "ruin")
         return _REJECT
     ret = pnl.return_on_premium
     if ret is None:
@@ -240,6 +275,10 @@ def run_tune(config: TuneConfig, *, console: Console | None = None) -> TuneResul
         raise ValueError("n_trials must be >= 1")
     if config.n_jobs < 1:
         raise ValueError("n_jobs must be >= 1")
+    if not isinstance(config.bankroll, Decimal):
+        raise ValueError("bankroll must be a Decimal")
+    if not config.bankroll.is_finite() or config.bankroll <= _ZERO:
+        raise ValueError(f"bankroll must be positive, got {config.bankroll}")
     for name in config.strategies:
         if name not in STRATEGY_MODULES:
             raise ValueError(f"unknown strategy {name!r}")
@@ -296,11 +335,13 @@ def print_tune_results(result: TuneResult, *, console: Console) -> None:
     console.print(
         f"[dim]events={result.n_events} · min n="
         f"{result.min_n} ({cfg.min_frac}×events) · "
-        f"trials={cfg.n_trials}[/dim]"
+        f"bankroll={cfg.bankroll} · trials={cfg.n_trials}[/dim]"
     )
     rows = _trial_rows(result.study, top_k=cfg.top_k)
     if not rows:
-        console.print("[yellow]No trials met the n-floor / return constraints.[/yellow]")
+        console.print(
+            "[yellow]No trials met the n-floor / ruin / return constraints.[/yellow]"
+        )
         return
 
     table = Table(title="research tune · top trials")
@@ -313,6 +354,7 @@ def print_tune_results(result: TuneResult, *, console: Console) -> None:
     table.add_column("n", justify="right")
     table.add_column("gross", justify="right")
     table.add_column("return", justify="right")
+    table.add_column("final_cash", justify="right")
     for rank, trial in enumerate(rows, start=1):
         attrs = trial.user_attrs
         ret = attrs.get("return")
@@ -327,5 +369,6 @@ def print_tune_results(result: TuneResult, *, console: Console) -> None:
             str(attrs.get("n", "—")),
             str(attrs.get("gross", "—")),
             ret_s,
+            str(attrs.get("final_cash", "—")),
         )
     console.print(table)

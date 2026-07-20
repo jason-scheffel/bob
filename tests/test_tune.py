@@ -21,6 +21,8 @@ from bob.db import (
 )
 from bob.kalshi import STATUS_COMPLETE, Bracket, Event, SettledEvent
 from bob.research.common import checkpoint_end_ts
+from bob.research.pnl import QuoteSimTrade
+from bob.research.trades import TradeObservation
 from bob.research.tune import (
     TuneConfig,
     count_complete_events,
@@ -28,6 +30,7 @@ from bob.research.tune import (
     min_eligible_trades,
     parse_strategy_names,
     run_tune,
+    simulate_bankroll,
 )
 from helpers import RESEARCH_CLOSE
 
@@ -45,6 +48,51 @@ def test_parse_strategy_names() -> None:
 def test_min_eligible_trades_ceil() -> None:
     assert min_eligible_trades(n_events=720, min_frac=Decimal("0.25")) == 180
     assert min_eligible_trades(n_events=10, min_frac=Decimal("0.25")) == 3
+
+
+def _trade(
+    *,
+    end_ts: int,
+    premium: str,
+    settlement: str,
+    event: str = "E",
+) -> QuoteSimTrade:
+    return QuoteSimTrade(
+        observation=TradeObservation(
+            event_ticker=event,
+            market_ticker=f"{event}-A",
+            minute=55,
+            end_ts=end_ts,
+            side="yes",
+            won=settlement == "1",
+        ),
+        premium=Decimal(premium),
+        settlement=Decimal(settlement),
+        gross=Decimal(settlement) - Decimal(premium),
+    )
+
+
+def test_simulate_bankroll_ruin_on_loss_streak() -> None:
+    # start 1.00; three full losses at 0.40 → cannot fund / dies
+    trades = (
+        _trade(end_ts=100, premium="0.40", settlement="0", event="A"),
+        _trade(end_ts=200, premium="0.40", settlement="0", event="B"),
+        _trade(end_ts=300, premium="0.40", settlement="0", event="C"),
+    )
+    survived, cash = simulate_bankroll(trades, start=Decimal("1.00"))
+    assert survived is False
+    assert cash < Decimal("0.40")
+
+
+def test_simulate_bankroll_survives_and_tracks_cash() -> None:
+    trades = (
+        _trade(end_ts=100, premium="0.40", settlement="1", event="A"),
+        _trade(end_ts=200, premium="0.50", settlement="0", event="B"),
+    )
+    # 100 - 0.40 + 1 = 100.60; then 100.60 - 0.50 + 0 = 100.10
+    survived, cash = simulate_bankroll(trades, start=Decimal("100"))
+    assert survived is True
+    assert cash == Decimal("100.10")
 
 
 def _seed_s1_db(db_path: Path, *, n_events: int = 4) -> None:
@@ -135,6 +183,28 @@ def test_count_complete_events_and_n_floor_reject(tmp_path: Path) -> None:
     assert trial.user_attrs.get("reject") == "n_floor"
 
 
+def test_evaluate_trial_rejects_ruin_with_tiny_bankroll(tmp_path: Path) -> None:
+    db_path = tmp_path / "bob.sqlite"
+    _seed_s1_db(db_path, n_events=4)
+    config = TuneConfig(
+        db=db_path,
+        strategies=("s1",),
+        minutes=(55,),
+        side="yes",
+        start=None,
+        end=None,
+        min_frac=Decimal("0.25"),
+        n_trials=1,
+        n_jobs=1,
+        bankroll=Decimal("0.01"),
+    )
+    study = optuna.create_study(direction="maximize")
+    trial = study.ask()
+    value = evaluate_trial(trial, config=config, min_n=1)
+    assert value == float("-inf")
+    assert trial.user_attrs.get("reject") == "ruin"
+
+
 def test_evaluate_trial_accepts_and_records_overlays(tmp_path: Path) -> None:
     db_path = tmp_path / "bob.sqlite"
     _seed_s1_db(db_path, n_events=4)
@@ -205,9 +275,12 @@ def test_research_tune_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
             "2",
             "--min-frac",
             "0.25",
+            "--bankroll",
+            "100",
         ],
         env={"COLUMNS": "200"},
     )
     assert result.exit_code == 0, result.output
     assert "events=4" in result.output
+    assert "bankroll=100" in result.output
     assert "tune" in result.output.lower() or "top trials" in result.output
