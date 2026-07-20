@@ -708,6 +708,16 @@ def parse_stop_from(value: str) -> int:
     return stop_from
 
 
+def parse_take_pct(value: str) -> Decimal:
+    try:
+        take_pct = Decimal(value)
+    except InvalidOperation as exc:
+        raise typer.BadParameter("take-pct must be a positive decimal") from exc
+    if not take_pct.is_finite() or take_pct <= 0:
+        raise typer.BadParameter("take-pct must be a positive decimal")
+    return take_pct
+
+
 def parse_side(value: str) -> Side:
     normalized = value.strip().lower()
     if normalized == "yes":
@@ -720,17 +730,24 @@ def parse_side(value: str) -> Side:
 def _print_research_banner(
     *,
     stop_bid: Decimal | None = None,
+    take_pct: Decimal | None = None,
     stop_from: int = DEFAULT_STOP_FROM,
 ) -> None:
     console.print(
         "[dim]quote-sim · 1 contract · YES@ask / NO@(1−bid) · "
         "gross only (no fees) · minute close ≠ proven fill[/dim]"
     )
+    if stop_bid is None and take_pct is None:
+        return
+    parts: list[str] = []
     if stop_bid is not None:
-        console.print(
-            f"[dim]stop-bid≤{stop_bid} from M{stop_from} · "
-            "YES@bid / NO@(1−ask) exit[/dim]"
-        )
+        parts.append(f"stop-bid≤{stop_bid}")
+    if take_pct is not None:
+        parts.append(f"take-pct={take_pct}")
+    console.print(
+        f"[dim]{' · '.join(parts)} from M{stop_from} · "
+        "YES@bid / NO@(1−ask) exit · first touch wins[/dim]"
+    )
 
 
 def _fmt_return(pnl) -> str:
@@ -754,10 +771,13 @@ def _print_research_tables(
     outcome_minutes,
     abstention_attr: str | None = None,
     stop_bid: Decimal | None = None,
+    take_pct: Decimal | None = None,
     stop_from: int = DEFAULT_STOP_FROM,
 ) -> None:
-    _print_research_banner(stop_bid=stop_bid, stop_from=stop_from)
-    show_stopped = stop_bid is not None
+    _print_research_banner(
+        stop_bid=stop_bid, take_pct=take_pct, stop_from=stop_from
+    )
+    show_exits = stop_bid is not None or take_pct is not None
     table = Table(title=f"{strategy} · {summary} · side={side}")
     table.add_column("minute", justify="right")
     table.add_column("n", justify="right")
@@ -766,8 +786,9 @@ def _print_research_tables(
     table.add_column("gross", justify="right")
     table.add_column("return", justify="right")
     table.add_column("win_rate", justify="right")
-    if show_stopped:
+    if show_exits:
         table.add_column("stopped", justify="right")
+        table.add_column("taken", justify="right")
     if abstention_attr is not None:
         table.add_column("abstained", justify="right")
     outcome_by_minute = {stats.minute: stats for stats in outcome_minutes}
@@ -781,8 +802,9 @@ def _print_research_tables(
             _fmt_return(pnl),
             _fmt_win_rate(pnl),
         ]
-        if show_stopped:
+        if show_exits:
             row.append(str(pnl.stopped))
+            row.append(str(pnl.taken))
         if abstention_attr is not None:
             stats = outcome_by_minute.get(minute)
             row.append("—" if stats is None else str(getattr(stats, abstention_attr)))
@@ -882,11 +904,26 @@ def _register_research_strategy(
                 metavar="0..1",
             ),
         ] = None,
+        take_pct: Annotated[
+            Decimal | None,
+            typer.Option(
+                "--take-pct",
+                help=(
+                    "Optional take-profit: exit when side mark ≥ "
+                    "premium×(1+pct); omit for no take."
+                ),
+                parser=parse_take_pct,
+                metavar="PCT",
+            ),
+        ] = None,
         stop_from: Annotated[
             int,
             typer.Option(
                 "--stop-from",
-                help="First minute to arm the stop (ignored without --stop-bid).",
+                help=(
+                    "First minute to arm stop-bid / take-pct "
+                    "(ignored when neither is set)."
+                ),
                 parser=parse_stop_from,
                 metavar="1..59",
             ),
@@ -924,6 +961,7 @@ def _register_research_strategy(
                 report.trades,
                 minute_list,
                 stop_bid=stop_bid,
+                take_pct=take_pct,
                 stop_from=stop_from,
             )
         finally:
@@ -936,6 +974,7 @@ def _register_research_strategy(
             outcome_minutes=report.minutes,
             abstention_attr="abstained" if has_abstentions else None,
             stop_bid=stop_bid,
+            take_pct=take_pct,
             stop_from=stop_from,
         )
 
@@ -1053,11 +1092,26 @@ def research_s12(
             metavar="0..1",
         ),
     ] = None,
+    take_pct: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--take-pct",
+            help=(
+                "Optional take-profit: exit when side mark ≥ "
+                "premium×(1+pct); omit for no take."
+            ),
+            parser=parse_take_pct,
+            metavar="PCT",
+        ),
+    ] = None,
     stop_from: Annotated[
         int,
         typer.Option(
             "--stop-from",
-            help="First minute to arm the stop (ignored without --stop-bid).",
+            help=(
+                "First minute to arm stop-bid / take-pct "
+                "(ignored when neither is set)."
+            ),
             parser=parse_stop_from,
             metavar="1..59",
         ),
@@ -1097,6 +1151,7 @@ def research_s12(
             report.trades,
             minute_list,
             stop_bid=stop_bid,
+            take_pct=take_pct,
             stop_from=stop_from,
         )
     finally:
@@ -1109,6 +1164,7 @@ def research_s12(
         outcome_minutes=report.minutes,
         abstention_attr="abstained",
         stop_bid=stop_bid,
+        take_pct=take_pct,
         stop_from=stop_from,
     )
 
@@ -1152,11 +1208,26 @@ def research_s13(
             metavar="0..1",
         ),
     ] = None,
+    take_pct: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--take-pct",
+            help=(
+                "Optional take-profit: exit when side mark ≥ "
+                "premium×(1+pct); omit for no take."
+            ),
+            parser=parse_take_pct,
+            metavar="PCT",
+        ),
+    ] = None,
     stop_from: Annotated[
         int,
         typer.Option(
             "--stop-from",
-            help="First minute to arm the stop (ignored without --stop-bid).",
+            help=(
+                "First minute to arm stop-bid / take-pct "
+                "(ignored when neither is set)."
+            ),
             parser=parse_stop_from,
             metavar="1..59",
         ),
@@ -1196,6 +1267,7 @@ def research_s13(
             report.trades,
             minute_list,
             stop_bid=stop_bid,
+            take_pct=take_pct,
             stop_from=stop_from,
         )
     finally:
@@ -1208,6 +1280,7 @@ def research_s13(
         outcome_minutes=report.minutes,
         abstention_attr="abstained",
         stop_bid=stop_bid,
+        take_pct=take_pct,
         stop_from=stop_from,
     )
 
@@ -1260,11 +1333,26 @@ def research_s14(
             metavar="0..1",
         ),
     ] = None,
+    take_pct: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--take-pct",
+            help=(
+                "Optional take-profit: exit when side mark ≥ "
+                "premium×(1+pct); omit for no take."
+            ),
+            parser=parse_take_pct,
+            metavar="PCT",
+        ),
+    ] = None,
     stop_from: Annotated[
         int,
         typer.Option(
             "--stop-from",
-            help="First minute to arm the stop (ignored without --stop-bid).",
+            help=(
+                "First minute to arm stop-bid / take-pct "
+                "(ignored when neither is set)."
+            ),
             parser=parse_stop_from,
             metavar="1..59",
         ),
@@ -1305,6 +1393,7 @@ def research_s14(
             report.trades,
             minute_list,
             stop_bid=stop_bid,
+            take_pct=take_pct,
             stop_from=stop_from,
         )
     finally:
@@ -1320,6 +1409,7 @@ def research_s14(
         outcome_minutes=report.minutes,
         abstention_attr="abstained",
         stop_bid=stop_bid,
+        take_pct=take_pct,
         stop_from=stop_from,
     )
 
@@ -1370,11 +1460,26 @@ def research_s15(
             metavar="0..1",
         ),
     ] = None,
+    take_pct: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--take-pct",
+            help=(
+                "Optional take-profit: exit when side mark ≥ "
+                "premium×(1+pct); omit for no take."
+            ),
+            parser=parse_take_pct,
+            metavar="PCT",
+        ),
+    ] = None,
     stop_from: Annotated[
         int,
         typer.Option(
             "--stop-from",
-            help="First minute to arm the stop (ignored without --stop-bid).",
+            help=(
+                "First minute to arm stop-bid / take-pct "
+                "(ignored when neither is set)."
+            ),
             parser=parse_stop_from,
             metavar="1..59",
         ),
@@ -1415,6 +1520,7 @@ def research_s15(
             report.trades,
             minute_list,
             stop_bid=stop_bid,
+            take_pct=take_pct,
             stop_from=stop_from,
         )
     finally:
@@ -1429,6 +1535,7 @@ def research_s15(
         outcome_minutes=report.minutes,
         abstention_attr="abstained",
         stop_bid=stop_bid,
+        take_pct=take_pct,
         stop_from=stop_from,
     )
 
@@ -1472,11 +1579,26 @@ def research_s16(
             metavar="0..1",
         ),
     ] = None,
+    take_pct: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--take-pct",
+            help=(
+                "Optional take-profit: exit when side mark ≥ "
+                "premium×(1+pct); omit for no take."
+            ),
+            parser=parse_take_pct,
+            metavar="PCT",
+        ),
+    ] = None,
     stop_from: Annotated[
         int,
         typer.Option(
             "--stop-from",
-            help="First minute to arm the stop (ignored without --stop-bid).",
+            help=(
+                "First minute to arm stop-bid / take-pct "
+                "(ignored when neither is set)."
+            ),
             parser=parse_stop_from,
             metavar="1..59",
         ),
@@ -1516,6 +1638,7 @@ def research_s16(
             report.trades,
             minute_list,
             stop_bid=stop_bid,
+            take_pct=take_pct,
             stop_from=stop_from,
         )
     finally:
@@ -1528,6 +1651,7 @@ def research_s16(
         outcome_minutes=report.minutes,
         abstention_attr="abstained",
         stop_bid=stop_bid,
+        take_pct=take_pct,
         stop_from=stop_from,
     )
 
@@ -1580,11 +1704,26 @@ def research_s17(
             metavar="0..1",
         ),
     ] = None,
+    take_pct: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--take-pct",
+            help=(
+                "Optional take-profit: exit when side mark ≥ "
+                "premium×(1+pct); omit for no take."
+            ),
+            parser=parse_take_pct,
+            metavar="PCT",
+        ),
+    ] = None,
     stop_from: Annotated[
         int,
         typer.Option(
             "--stop-from",
-            help="First minute to arm the stop (ignored without --stop-bid).",
+            help=(
+                "First minute to arm stop-bid / take-pct "
+                "(ignored when neither is set)."
+            ),
             parser=parse_stop_from,
             metavar="1..59",
         ),
@@ -1625,6 +1764,7 @@ def research_s17(
             report.trades,
             minute_list,
             stop_bid=stop_bid,
+            take_pct=take_pct,
             stop_from=stop_from,
         )
     finally:
@@ -1640,6 +1780,7 @@ def research_s17(
         outcome_minutes=report.minutes,
         abstention_attr="abstained",
         stop_bid=stop_bid,
+        take_pct=take_pct,
         stop_from=stop_from,
     )
 
@@ -1686,6 +1827,7 @@ def _print_all_research_table(
     summaries,
     *,
     stop_bid: Decimal | None = None,
+    take_pct: Decimal | None = None,
 ) -> None:
     minutes = []
     for item in summaries:
@@ -1697,7 +1839,7 @@ def _print_all_research_table(
         table.add_column("strategy")
         console.print(table)
         return
-    show_stopped = stop_bid is not None
+    show_exits = stop_bid is not None or take_pct is not None
     for minute in minutes:
         table = Table(title=f"research all · M{minute}")
         table.add_column("strategy")
@@ -1707,8 +1849,9 @@ def _print_all_research_table(
         table.add_column("gross", justify="right")
         table.add_column("return", justify="right")
         table.add_column("win_rate", justify="right")
-        if show_stopped:
+        if show_exits:
             table.add_column("stopped", justify="right")
+            table.add_column("taken", justify="right")
         for item in summaries:
             pnl = next(
                 (report for m, report in item.by_minute if m == minute),
@@ -1725,8 +1868,9 @@ def _print_all_research_table(
                 _fmt_return(pnl),
                 _fmt_win_rate(pnl),
             ]
-            if show_stopped:
+            if show_exits:
                 row.append(str(pnl.stopped))
+                row.append(str(pnl.taken))
             table.add_row(*row)
         console.print(table)
 
@@ -1832,11 +1976,26 @@ def research_all(
             metavar="0..1",
         ),
     ] = None,
+    take_pct: Annotated[
+        Decimal | None,
+        typer.Option(
+            "--take-pct",
+            help=(
+                "Optional take-profit: exit when side mark ≥ "
+                "premium×(1+pct); omit for no take."
+            ),
+            parser=parse_take_pct,
+            metavar="PCT",
+        ),
+    ] = None,
     stop_from: Annotated[
         int,
         typer.Option(
             "--stop-from",
-            help="First minute to arm the stop (ignored without --stop-bid).",
+            help=(
+                "First minute to arm stop-bid / take-pct "
+                "(ignored when neither is set)."
+            ),
             parser=parse_stop_from,
             metavar="1..59",
         ),
@@ -1869,7 +2028,9 @@ def research_all(
     if workers is not None and workers < 1:
         console.print("[red]Error:[/red] --workers must be >= 1")
         raise typer.Exit(code=2)
-    _print_research_banner(stop_bid=stop_bid, stop_from=stop_from)
+    _print_research_banner(
+        stop_bid=stop_bid, take_pct=take_pct, stop_from=stop_from
+    )
     try:
         summaries = run_all_strategy_pnl(
             db,
@@ -1885,13 +2046,16 @@ def research_all(
             max_move=max_move,
             min_occupancy=min_occupancy,
             stop_bid=stop_bid,
+            take_pct=take_pct,
             stop_from=stop_from,
             workers=workers,
         )
     except Exception as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
-    _print_all_research_table(summaries, stop_bid=stop_bid)
+    _print_all_research_table(
+        summaries, stop_bid=stop_bid, take_pct=take_pct
+    )
 
 
 def main() -> None:

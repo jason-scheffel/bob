@@ -226,6 +226,7 @@ def run_strategy_pnl_on_db(
     max_move: Decimal = DEFAULT_MAX_MOVE,
     min_occupancy: Decimal = DEFAULT_MIN_OCCUPANCY,
     stop_bid: Decimal | None = None,
+    take_pct: Decimal | None = None,
     stop_from: int = DEFAULT_STOP_FROM,
     readonly: bool = False,
 ) -> StrategyPnlSummary:
@@ -251,6 +252,7 @@ def run_strategy_pnl_on_db(
             connection,
             report.trades,
             stop_bid=stop_bid,
+            take_pct=take_pct,
             stop_from=stop_from,
         )
         by_minute = score_trades_by_minute(
@@ -258,6 +260,7 @@ def run_strategy_pnl_on_db(
             report.trades,
             minutes,
             stop_bid=stop_bid,
+            take_pct=take_pct,
             stop_from=stop_from,
         )
     finally:
@@ -344,6 +347,7 @@ def run_all_strategy_pnl(
     max_move: Decimal = DEFAULT_MAX_MOVE,
     min_occupancy: Decimal = DEFAULT_MIN_OCCUPANCY,
     stop_bid: Decimal | None = None,
+    take_pct: Decimal | None = None,
     stop_from: int = DEFAULT_STOP_FROM,
     workers: int | None = None,
     names: Sequence[str] = STRATEGY_NAMES,
@@ -376,6 +380,7 @@ def run_all_strategy_pnl(
         "max_move": max_move,
         "min_occupancy": min_occupancy,
         "stop_bid": stop_bid,
+        "take_pct": take_pct,
         "stop_from": stop_from,
     }
     results: dict[str, StrategyPnlSummary] = {}
@@ -424,6 +429,7 @@ def _worker_pnl(name: str, payload: dict[str, Any]) -> StrategyPnlSummary:
         max_move=payload["max_move"],
         min_occupancy=payload["min_occupancy"],
         stop_bid=payload["stop_bid"],
+        take_pct=payload["take_pct"],
         stop_from=payload["stop_from"],
         readonly=True,
     )

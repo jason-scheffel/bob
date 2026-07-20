@@ -202,6 +202,88 @@ def test_no_side_stops_on_one_minus_ask() -> None:
     connection.close()
 
 
+def test_take_pct_exits_on_return_on_premium() -> None:
+    connection = connect(":memory:")
+    initialize_schema(connection)
+    store_market_candles(
+        connection,
+        [
+            _quote(45, bid="0.48", ask="0.50"),
+            # take level = 0.50 * 1.20 = 0.60
+            _quote(55, bid="0.62", ask="0.65"),
+        ],
+    )
+    obs = _obs(minute=45, won=False)
+    pnl = score_trades(
+        connection,
+        [obs],
+        take_pct=Decimal("0.20"),
+        stop_from=55,
+    )
+    trade = pnl.trades[0]
+    assert trade.taken is True
+    assert trade.stopped is False
+    assert trade.exit_minute == 55
+    assert trade.settlement == Decimal("0.62")
+    assert trade.gross == Decimal("0.12")
+    assert pnl.taken == 1
+    assert pnl.wins == 1
+    connection.close()
+
+
+def test_first_touch_stop_before_later_take() -> None:
+    connection = connect(":memory:")
+    initialize_schema(connection)
+    store_market_candles(
+        connection,
+        [
+            _quote(45, bid="0.48", ask="0.50"),
+            _quote(55, bid="0.28", ask="0.32"),
+            _quote(56, bid="0.70", ask="0.75"),
+        ],
+    )
+    obs = _obs(minute=45, won=True)
+    pnl = score_trades(
+        connection,
+        [obs],
+        stop_bid=Decimal("0.30"),
+        take_pct=Decimal("0.20"),
+        stop_from=55,
+    )
+    trade = pnl.trades[0]
+    assert trade.stopped is True
+    assert trade.taken is False
+    assert trade.exit_minute == 55
+    assert trade.settlement == Decimal("0.28")
+    connection.close()
+
+
+def test_same_bar_prefers_stop_over_take() -> None:
+    connection = connect(":memory:")
+    initialize_schema(connection)
+    store_market_candles(
+        connection,
+        [
+            _quote(45, bid="0.48", ask="0.50"),
+            # take level 0.60; stop_bid 0.70 → mark 0.65 hits both
+            _quote(55, bid="0.65", ask="0.68"),
+        ],
+    )
+    obs = _obs(minute=45, won=True)
+    pnl = score_trades(
+        connection,
+        [obs],
+        stop_bid=Decimal("0.70"),
+        take_pct=Decimal("0.20"),
+        stop_from=55,
+    )
+    trade = pnl.trades[0]
+    assert trade.stopped is True
+    assert trade.taken is False
+    assert trade.settlement == Decimal("0.65")
+    connection.close()
+
+
 def test_invalid_stop_params_raise() -> None:
     connection = connect(":memory:")
     initialize_schema(connection)
@@ -211,10 +293,12 @@ def test_invalid_stop_params_raise() -> None:
         score_trades(
             connection, [], stop_bid=Decimal("0.3"), stop_from=0
         )
+    with pytest.raises(ValueError, match="take_pct"):
+        score_trades(connection, [], take_pct=Decimal("0"))
     connection.close()
 
 
-def test_research_s21_cli_accepts_stop_bid(
+def test_research_s21_cli_accepts_stop_and_take(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr("bob.cli.require_gate", lambda: None)
@@ -247,8 +331,13 @@ def test_research_s21_cli_accepts_stop_bid(
             "55",
             "--stop-bid",
             "0.30",
+            "--take-pct",
+            "0.20",
         ],
+        env={"COLUMNS": "200"},
     )
     assert result.exit_code == 0, result.output
     assert "stop-bid≤0.30" in result.output
-    assert "stopped" in result.output
+    assert "take-pct=0.20" in result.output
+    assert "first touch" in result.output
+    assert "taken" in result.output

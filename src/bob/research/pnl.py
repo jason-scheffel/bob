@@ -7,8 +7,9 @@ Strategies never read quotes; this layer prices already-selected trades.
 Labels are quote-sim: minute close ≠ proven executable depth at the boundary.
 Gross only (settlement − premium); fees are out of scope.
 
-Optional stop-bid overlay: after entry, from ``stop_from`` onward, exit at
-the first minute whose side mark ≤ ``stop_bid`` (YES@bid / NO@(1−ask)).
+Optional early-exit overlays (first touch wins; same bar prefers stop):
+- stop-bid: exit when side mark ≤ stop_bid (YES@bid / NO@(1−ask))
+- take-pct: exit when side mark ≥ premium × (1 + take_pct)
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Literal
 
 from bob.db import load_market_quote
 from bob.research.common import finite_decimal
@@ -26,6 +28,8 @@ ONE = Decimal("1")
 ZERO = Decimal("0")
 DEFAULT_STOP_FROM = 55
 
+ExitKind = Literal["stop", "take"]
+
 
 @dataclass(frozen=True, slots=True)
 class QuoteSimTrade:
@@ -34,6 +38,7 @@ class QuoteSimTrade:
     settlement: Decimal
     gross: Decimal
     stopped: bool = False
+    taken: bool = False
     exit_minute: int | None = None
 
 
@@ -51,6 +56,7 @@ class QuoteSimReport:
     losses: int
     trades: tuple[QuoteSimTrade, ...]
     stopped: int = 0
+    taken: int = 0
 
     @property
     def win_rate(self) -> float | None:
@@ -99,30 +105,49 @@ def settlement_payout(*, won: bool) -> Decimal:
     return ONE if won else ZERO
 
 
-def _validate_stop_params(
-    stop_bid: Decimal | None,
-    stop_from: int,
-) -> Decimal | None:
+def _as_decimal(value: Decimal | str | int | float) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
+
+
+def _validate_exit_from(exit_from: int) -> None:
+    if not isinstance(exit_from, int) or not 1 <= exit_from <= 59:
+        raise ValueError(f"stop_from must be an int in 1..59, got {exit_from!r}")
+
+
+def _validate_stop_bid(stop_bid: Decimal | None) -> Decimal | None:
     if stop_bid is None:
         return None
-    if not isinstance(stop_bid, Decimal):
-        stop_bid = Decimal(str(stop_bid))
+    stop_bid = _as_decimal(stop_bid)
     if not stop_bid.is_finite() or stop_bid < ZERO or stop_bid > ONE:
         raise ValueError(f"stop_bid must be a Decimal in [0, 1], got {stop_bid}")
-    if not isinstance(stop_from, int) or not 1 <= stop_from <= 59:
-        raise ValueError(f"stop_from must be an int in 1..59, got {stop_from!r}")
     return stop_bid
 
 
-def find_stop_exit(
+def _validate_take_pct(take_pct: Decimal | None) -> Decimal | None:
+    if take_pct is None:
+        return None
+    take_pct = _as_decimal(take_pct)
+    if not take_pct.is_finite() or take_pct <= ZERO:
+        raise ValueError(f"take_pct must be a positive Decimal, got {take_pct}")
+    return take_pct
+
+
+def find_early_exit(
     connection: sqlite3.Connection,
     obs: TradeObservation,
     *,
-    stop_bid: Decimal,
-    stop_from: int,
-) -> tuple[Decimal, int] | None:
-    """First post-entry mark ≤ stop_bid from ``stop_from``..59, if any."""
-    start = max(obs.minute + 1, stop_from)
+    premium: Decimal,
+    stop_bid: Decimal | None,
+    take_pct: Decimal | None,
+    exit_from: int,
+) -> tuple[Decimal, int, ExitKind] | None:
+    """First post-entry stop or take from ``exit_from``..59, if any."""
+    if stop_bid is None and take_pct is None:
+        return None
+    take_level = None if take_pct is None else premium * (ONE + take_pct)
+    start = max(obs.minute + 1, exit_from)
     for minute in range(start, 60):
         end_ts = obs.end_ts + (minute - obs.minute) * 60
         quote = load_market_quote(connection, obs.market_ticker, end_ts)
@@ -133,9 +158,36 @@ def find_stop_exit(
             continue
         bid, ask = validated
         mark = exit_mark_for_side(obs.side, bid, ask)
-        if mark <= stop_bid:
-            return mark, minute
+        hit_stop = stop_bid is not None and mark <= stop_bid
+        hit_take = take_level is not None and mark >= take_level
+        if hit_stop:
+            return mark, minute, "stop"
+        if hit_take:
+            return mark, minute, "take"
     return None
+
+
+def find_stop_exit(
+    connection: sqlite3.Connection,
+    obs: TradeObservation,
+    *,
+    stop_bid: Decimal,
+    stop_from: int,
+) -> tuple[Decimal, int] | None:
+    """Compatibility wrapper: stop-only early exit."""
+    # Premium unused for stop-only; pass ZERO.
+    hit = find_early_exit(
+        connection,
+        obs,
+        premium=ZERO,
+        stop_bid=stop_bid,
+        take_pct=None,
+        exit_from=stop_from,
+    )
+    if hit is None:
+        return None
+    mark, minute, _kind = hit
+    return mark, minute
 
 
 def score_trades(
@@ -143,10 +195,13 @@ def score_trades(
     observations: Sequence[TradeObservation],
     *,
     stop_bid: Decimal | None = None,
+    take_pct: Decimal | None = None,
     stop_from: int = DEFAULT_STOP_FROM,
 ) -> QuoteSimReport:
     """Price observations at their checkpoint quote closes (1 contract)."""
-    stop_bid = _validate_stop_params(stop_bid, stop_from)
+    _validate_exit_from(stop_from)
+    stop_bid = _validate_stop_bid(stop_bid)
+    take_pct = _validate_take_pct(take_pct)
     priced: list[QuoteSimTrade] = []
     quote_excluded = 0
     for obs in observations:
@@ -161,17 +216,21 @@ def score_trades(
         bid, ask = validated
         premium = premium_for_side(obs.side, bid, ask)
         stopped = False
+        taken = False
         exit_minute: int | None = None
-        if stop_bid is not None:
-            hit = find_stop_exit(
+        if stop_bid is not None or take_pct is not None:
+            hit = find_early_exit(
                 connection,
                 obs,
+                premium=premium,
                 stop_bid=stop_bid,
-                stop_from=stop_from,
+                take_pct=take_pct,
+                exit_from=stop_from,
             )
             if hit is not None:
-                settlement, exit_minute = hit
-                stopped = True
+                settlement, exit_minute, kind = hit
+                stopped = kind == "stop"
+                taken = kind == "take"
             else:
                 settlement = settlement_payout(won=obs.won)
         else:
@@ -183,6 +242,7 @@ def score_trades(
                 settlement=settlement,
                 gross=settlement - premium,
                 stopped=stopped,
+                taken=taken,
                 exit_minute=exit_minute,
             )
         )
@@ -191,10 +251,11 @@ def score_trades(
     payout_sum = sum((trade.settlement for trade in priced), ZERO)
     gross_sum = sum((trade.gross for trade in priced), ZERO)
     wins = sum(
-        1 for trade in priced if not trade.stopped and trade.observation.won
+        1
+        for trade in priced
+        if trade.taken or (not trade.stopped and trade.observation.won)
     )
     losses = len(priced) - wins
-    stopped_count = sum(1 for trade in priced if trade.stopped)
     return QuoteSimReport(
         strategy_eligible=len(observations),
         quote_excluded=quote_excluded,
@@ -205,7 +266,8 @@ def score_trades(
         wins=wins,
         losses=losses,
         trades=tuple(priced),
-        stopped=stopped_count,
+        stopped=sum(1 for trade in priced if trade.stopped),
+        taken=sum(1 for trade in priced if trade.taken),
     )
 
 
@@ -215,6 +277,7 @@ def score_trades_by_minute(
     minutes: Sequence[int],
     *,
     stop_bid: Decimal | None = None,
+    take_pct: Decimal | None = None,
     stop_from: int = DEFAULT_STOP_FROM,
 ) -> tuple[tuple[int, QuoteSimReport], ...]:
     """Score separately for each checkpoint minute (order follows ``minutes``)."""
@@ -229,6 +292,7 @@ def score_trades_by_minute(
                 connection,
                 by_minute.get(minute, ()),
                 stop_bid=stop_bid,
+                take_pct=take_pct,
                 stop_from=stop_from,
             ),
         )
