@@ -1,0 +1,2316 @@
+{
+  "s1/loss": {
+    "minutes": [
+      {
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 50,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s1",
+    "trades": [
+      {
+        "end_ts": 4086553800,
+        "event_ticker": "SYNTH-EVENT-001-LOSS",
+        "market_ticker": "SYNTH-EVENT-001-LOSS-BAND-A",
+        "minute": 50,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s1/multi_event": {
+    "minutes": [
+      {
+        "eligible": 2,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 2
+      }
+    ],
+    "side": "yes",
+    "strategy": "s1",
+    "trades": [
+      {
+        "end_ts": 4086557700,
+        "event_ticker": "SYNTH-EVENT-001-MULTI-0",
+        "market_ticker": "SYNTH-EVENT-001-MULTI-0-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      },
+      {
+        "end_ts": 4086561300,
+        "event_ticker": "SYNTH-EVENT-001-MULTI-1",
+        "market_ticker": "SYNTH-EVENT-001-MULTI-1-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s1/trade_no": {
+    "minutes": [
+      {
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 45,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s1",
+    "trades": [
+      {
+        "end_ts": 4086549900,
+        "event_ticker": "SYNTH-EVENT-001-TRADE",
+        "market_ticker": "SYNTH-EVENT-001-TRADE-BAND-A",
+        "minute": 45,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s1/trade_yes": {
+    "minutes": [
+      {
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 45,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s1",
+    "trades": [
+      {
+        "end_ts": 4086549900,
+        "event_ticker": "SYNTH-EVENT-001-TRADE",
+        "market_ticker": "SYNTH-EVENT-001-TRADE-BAND-A",
+        "minute": 45,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s10/abstain_low_dwell": {
+    "minutes": [
+      {
+        "abstentions": {
+          "low_range_dwell": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s10",
+    "trades": []
+  },
+  "s10/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s10",
+    "trades": [
+      {
+        "end_ts": 4086878100,
+        "event_ticker": "SYNTH-EVENT-010-LOSS",
+        "market_ticker": "SYNTH-EVENT-010-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s10/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s10",
+    "trades": [
+      {
+        "end_ts": 4086870900,
+        "event_ticker": "SYNTH-EVENT-010-TRADE",
+        "market_ticker": "SYNTH-EVENT-010-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s10/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s10",
+    "trades": [
+      {
+        "end_ts": 4086870900,
+        "event_ticker": "SYNTH-EVENT-010-TRADE",
+        "market_ticker": "SYNTH-EVENT-010-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s11/abstain_breach_up": {
+    "minutes": [
+      {
+        "abstentions": {
+          "replay_breach_up": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s11",
+    "trades": []
+  },
+  "s11/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s11",
+    "trades": [
+      {
+        "end_ts": 4086914100,
+        "event_ticker": "SYNTH-EVENT-011-LOSS",
+        "market_ticker": "SYNTH-EVENT-011-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s11/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s11",
+    "trades": [
+      {
+        "end_ts": 4086906900,
+        "event_ticker": "SYNTH-EVENT-011-TRADE",
+        "market_ticker": "SYNTH-EVENT-011-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s11/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s11",
+    "trades": [
+      {
+        "end_ts": 4086906900,
+        "event_ticker": "SYNTH-EVENT-011-TRADE",
+        "market_ticker": "SYNTH-EVENT-011-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s12/abstain_print_risk": {
+    "minutes": [
+      {
+        "abstentions": {
+          "print_risk_high": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s12",
+    "trades": []
+  },
+  "s12/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s12",
+    "trades": [
+      {
+        "end_ts": 4086950100,
+        "event_ticker": "SYNTH-EVENT-012-LOSS",
+        "market_ticker": "SYNTH-EVENT-012-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s12/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s12",
+    "trades": [
+      {
+        "end_ts": 4086942900,
+        "event_ticker": "SYNTH-EVENT-012-TRADE",
+        "market_ticker": "SYNTH-EVENT-012-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s12/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s12",
+    "trades": [
+      {
+        "end_ts": 4086942900,
+        "event_ticker": "SYNTH-EVENT-012-TRADE",
+        "market_ticker": "SYNTH-EVENT-012-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s13/abstain_low_prob": {
+    "minutes": [
+      {
+        "abstentions": {
+          "low_terminal_prob": 2
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s13",
+    "trades": []
+  },
+  "s13/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 2,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s13",
+    "trades": [
+      {
+        "end_ts": 4086993300,
+        "event_ticker": "SYNTH-EVENT-013-PRIOR-L",
+        "market_ticker": "SYNTH-EVENT-013-PRIOR-L-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      },
+      {
+        "end_ts": 4086996900,
+        "event_ticker": "SYNTH-EVENT-013-LOSS",
+        "market_ticker": "SYNTH-EVENT-013-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s13/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 2,
+        "exclusions": {},
+        "losses": 2,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s13",
+    "trades": [
+      {
+        "end_ts": 4086978900,
+        "event_ticker": "SYNTH-EVENT-013-PRIOR",
+        "market_ticker": "SYNTH-EVENT-013-PRIOR-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      },
+      {
+        "end_ts": 4086982500,
+        "event_ticker": "SYNTH-EVENT-013-TRADE",
+        "market_ticker": "SYNTH-EVENT-013-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s13/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 2,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 2
+      }
+    ],
+    "side": "yes",
+    "strategy": "s13",
+    "trades": [
+      {
+        "end_ts": 4086978900,
+        "event_ticker": "SYNTH-EVENT-013-PRIOR",
+        "market_ticker": "SYNTH-EVENT-013-PRIOR-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      },
+      {
+        "end_ts": 4086982500,
+        "event_ticker": "SYNTH-EVENT-013-TRADE",
+        "market_ticker": "SYNTH-EVENT-013-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s14/abstain_already_priced": {
+    "minutes": [
+      {
+        "abstentions": {
+          "already_priced": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 45,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s14",
+    "trades": []
+  },
+  "s14/abstain_low_quality": {
+    "minutes": [
+      {
+        "abstentions": {
+          "low_quality": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 45,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s14",
+    "trades": []
+  },
+  "s14/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 45,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s14",
+    "trades": [
+      {
+        "end_ts": 4087025100,
+        "event_ticker": "SYNTH-EVENT-014-LOSS",
+        "market_ticker": "SYNTH-EVENT-014-LOSS-BAND-A",
+        "minute": 45,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s14/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 45,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s14",
+    "trades": [
+      {
+        "end_ts": 4087014300,
+        "event_ticker": "SYNTH-EVENT-014-TRADE",
+        "market_ticker": "SYNTH-EVENT-014-TRADE-BAND-A",
+        "minute": 45,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s14/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 45,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s14",
+    "trades": [
+      {
+        "end_ts": 4087014300,
+        "event_ticker": "SYNTH-EVENT-014-TRADE",
+        "market_ticker": "SYNTH-EVENT-014-TRADE-BAND-A",
+        "minute": 45,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s15/abstain_in_transit": {
+    "minutes": [
+      {
+        "abstentions": {
+          "in_transit": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 45,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s15",
+    "trades": []
+  },
+  "s15/abstain_small_move": {
+    "minutes": [
+      {
+        "abstentions": {
+          "small_move": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 45,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s15",
+    "trades": []
+  },
+  "s15/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 45,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s15",
+    "trades": [
+      {
+        "end_ts": 4087061100,
+        "event_ticker": "SYNTH-EVENT-015-LOSS",
+        "market_ticker": "SYNTH-EVENT-015-LOSS-BAND-C",
+        "minute": 45,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s15/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 45,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s15",
+    "trades": [
+      {
+        "end_ts": 4087050300,
+        "event_ticker": "SYNTH-EVENT-015-TRADE",
+        "market_ticker": "SYNTH-EVENT-015-TRADE-BAND-C",
+        "minute": 45,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s15/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 45,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s15",
+    "trades": [
+      {
+        "end_ts": 4087050300,
+        "event_ticker": "SYNTH-EVENT-015-TRADE",
+        "market_ticker": "SYNTH-EVENT-015-TRADE-BAND-C",
+        "minute": 45,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s16/abstain_large_move": {
+    "minutes": [
+      {
+        "abstentions": {
+          "large_move": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s16",
+    "trades": []
+  },
+  "s16/abstain_unconfirmed": {
+    "minutes": [
+      {
+        "abstentions": {
+          "unconfirmed_bracket": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s16",
+    "trades": []
+  },
+  "s16/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s16",
+    "trades": [
+      {
+        "end_ts": 4087097700,
+        "event_ticker": "SYNTH-EVENT-016-LOSS",
+        "market_ticker": "SYNTH-EVENT-016-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s16/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s16",
+    "trades": [
+      {
+        "end_ts": 4087086900,
+        "event_ticker": "SYNTH-EVENT-016-TRADE",
+        "market_ticker": "SYNTH-EVENT-016-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s16/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s16",
+    "trades": [
+      {
+        "end_ts": 4087086900,
+        "event_ticker": "SYNTH-EVENT-016-TRADE",
+        "market_ticker": "SYNTH-EVENT-016-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s17/abstain_low_occupancy": {
+    "minutes": [
+      {
+        "abstentions": {
+          "low_occupancy": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s17",
+    "trades": []
+  },
+  "s17/abstain_mode_not_current": {
+    "minutes": [
+      {
+        "abstentions": {
+          "mode_not_current": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s17",
+    "trades": []
+  },
+  "s17/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s17",
+    "trades": [
+      {
+        "end_ts": 4087133700,
+        "event_ticker": "SYNTH-EVENT-017-LOSS",
+        "market_ticker": "SYNTH-EVENT-017-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s17/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s17",
+    "trades": [
+      {
+        "end_ts": 4087122900,
+        "event_ticker": "SYNTH-EVENT-017-TRADE",
+        "market_ticker": "SYNTH-EVENT-017-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s17/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s17",
+    "trades": [
+      {
+        "end_ts": 4087122900,
+        "event_ticker": "SYNTH-EVENT-017-TRADE",
+        "market_ticker": "SYNTH-EVENT-017-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s18/abstain_not_edgeward": {
+    "minutes": [
+      {
+        "abstentions": {
+          "not_edgeward": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s18",
+    "trades": []
+  },
+  "s18/abstain_unconfirmed": {
+    "minutes": [
+      {
+        "abstentions": {
+          "unconfirmed_bracket": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s18",
+    "trades": []
+  },
+  "s18/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s18",
+    "trades": [
+      {
+        "end_ts": 4087169700,
+        "event_ticker": "SYNTH-EVENT-018-LOSS",
+        "market_ticker": "SYNTH-EVENT-018-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s18/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s18",
+    "trades": [
+      {
+        "end_ts": 4087158900,
+        "event_ticker": "SYNTH-EVENT-018-TRADE",
+        "market_ticker": "SYNTH-EVENT-018-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s18/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s18",
+    "trades": [
+      {
+        "end_ts": 4087158900,
+        "event_ticker": "SYNTH-EVENT-018-TRADE",
+        "market_ticker": "SYNTH-EVENT-018-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s19/abstain_no_excursion": {
+    "minutes": [
+      {
+        "abstentions": {
+          "no_excursion": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s19",
+    "trades": []
+  },
+  "s19/abstain_unconfirmed": {
+    "minutes": [
+      {
+        "abstentions": {
+          "unconfirmed_bracket": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s19",
+    "trades": []
+  },
+  "s19/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s19",
+    "trades": [
+      {
+        "end_ts": 4087205700,
+        "event_ticker": "SYNTH-EVENT-019-LOSS",
+        "market_ticker": "SYNTH-EVENT-019-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s19/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s19",
+    "trades": [
+      {
+        "end_ts": 4087194900,
+        "event_ticker": "SYNTH-EVENT-019-TRADE",
+        "market_ticker": "SYNTH-EVENT-019-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s19/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s19",
+    "trades": [
+      {
+        "end_ts": 4087194900,
+        "event_ticker": "SYNTH-EVENT-019-TRADE",
+        "market_ticker": "SYNTH-EVENT-019-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s2/abstain_near_edge": {
+    "minutes": [
+      {
+        "abstentions": {
+          "near_edge": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s2",
+    "trades": []
+  },
+  "s2/abstain_unstable": {
+    "minutes": [
+      {
+        "abstentions": {
+          "unstable_path": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s2",
+    "trades": []
+  },
+  "s2/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s2",
+    "trades": [
+      {
+        "end_ts": 4086593700,
+        "event_ticker": "SYNTH-EVENT-002-LOSS",
+        "market_ticker": "SYNTH-EVENT-002-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s2/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s2",
+    "trades": [
+      {
+        "end_ts": 4086582900,
+        "event_ticker": "SYNTH-EVENT-002-TRADE",
+        "market_ticker": "SYNTH-EVENT-002-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s2/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s2",
+    "trades": [
+      {
+        "end_ts": 4086582900,
+        "event_ticker": "SYNTH-EVENT-002-TRADE",
+        "market_ticker": "SYNTH-EVENT-002-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s20/abstain_insufficient": {
+    "minutes": [
+      {
+        "abstentions": {
+          "insufficient_analogs": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s20",
+    "trades": []
+  },
+  "s20/loss": {
+    "minutes": [
+      {
+        "abstentions": {
+          "insufficient_analogs": 1
+        },
+        "eligible": 2,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s20",
+    "trades": [
+      {
+        "end_ts": 4087248900,
+        "event_ticker": "SYNTH-EVENT-020-LOSS-1",
+        "market_ticker": "SYNTH-EVENT-020-LOSS-1-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      },
+      {
+        "end_ts": 4087252500,
+        "event_ticker": "SYNTH-EVENT-020-LOSS-2",
+        "market_ticker": "SYNTH-EVENT-020-LOSS-2-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s20/multi_event": {
+    "minutes": [
+      {
+        "abstentions": {
+          "insufficient_analogs": 1
+        },
+        "eligible": 2,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 2
+      }
+    ],
+    "side": "yes",
+    "strategy": "s20",
+    "trades": [
+      {
+        "end_ts": 4087238100,
+        "event_ticker": "SYNTH-EVENT-020-LIB-1",
+        "market_ticker": "SYNTH-EVENT-020-LIB-1-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      },
+      {
+        "end_ts": 4087241700,
+        "event_ticker": "SYNTH-EVENT-020-LIB-2",
+        "market_ticker": "SYNTH-EVENT-020-LIB-2-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s20/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {
+          "insufficient_analogs": 1
+        },
+        "eligible": 2,
+        "exclusions": {},
+        "losses": 2,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s20",
+    "trades": [
+      {
+        "end_ts": 4087238100,
+        "event_ticker": "SYNTH-EVENT-020-LIB-1",
+        "market_ticker": "SYNTH-EVENT-020-LIB-1-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      },
+      {
+        "end_ts": 4087241700,
+        "event_ticker": "SYNTH-EVENT-020-LIB-2",
+        "market_ticker": "SYNTH-EVENT-020-LIB-2-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s20/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {
+          "insufficient_analogs": 1
+        },
+        "eligible": 2,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 2
+      }
+    ],
+    "side": "yes",
+    "strategy": "s20",
+    "trades": [
+      {
+        "end_ts": 4087238100,
+        "event_ticker": "SYNTH-EVENT-020-LIB-1",
+        "market_ticker": "SYNTH-EVENT-020-LIB-1-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      },
+      {
+        "end_ts": 4087241700,
+        "event_ticker": "SYNTH-EVENT-020-LIB-2",
+        "market_ticker": "SYNTH-EVENT-020-LIB-2-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s21/abstain_weak_lock": {
+    "minutes": [
+      {
+        "abstentions": {
+          "weak_lock": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s21",
+    "trades": []
+  },
+  "s21/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s21",
+    "trades": [
+      {
+        "end_ts": 4087274100,
+        "event_ticker": "SYNTH-EVENT-021-LOSS",
+        "market_ticker": "SYNTH-EVENT-021-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s21/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s21",
+    "trades": [
+      {
+        "end_ts": 4087266900,
+        "event_ticker": "SYNTH-EVENT-021-TRADE",
+        "market_ticker": "SYNTH-EVENT-021-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s21/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s21",
+    "trades": [
+      {
+        "end_ts": 4087266900,
+        "event_ticker": "SYNTH-EVENT-021-TRADE",
+        "market_ticker": "SYNTH-EVENT-021-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s22/abstain_asymmetric_weak": {
+    "minutes": [
+      {
+        "abstentions": {
+          "asymmetric_weak": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s22",
+    "trades": []
+  },
+  "s22/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s22",
+    "trades": [
+      {
+        "end_ts": 4087310100,
+        "event_ticker": "SYNTH-EVENT-022-LOSS",
+        "market_ticker": "SYNTH-EVENT-022-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s22/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s22",
+    "trades": [
+      {
+        "end_ts": 4087302900,
+        "event_ticker": "SYNTH-EVENT-022-TRADE",
+        "market_ticker": "SYNTH-EVENT-022-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s22/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s22",
+    "trades": [
+      {
+        "end_ts": 4087302900,
+        "event_ticker": "SYNTH-EVENT-022-TRADE",
+        "market_ticker": "SYNTH-EVENT-022-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s23/abstain_finished": {
+    "minutes": [
+      {
+        "abstentions": {
+          "finished_pullback": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 45,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s23",
+    "trades": []
+  },
+  "s23/abstain_young_age": {
+    "minutes": [
+      {
+        "abstentions": {
+          "young_age": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 45,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s23",
+    "trades": []
+  },
+  "s23/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 45,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s23",
+    "trades": [
+      {
+        "end_ts": 4087349100,
+        "event_ticker": "SYNTH-EVENT-023-LOSS",
+        "market_ticker": "SYNTH-EVENT-023-LOSS-BAND-A",
+        "minute": 45,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s23/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 45,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s23",
+    "trades": [
+      {
+        "end_ts": 4087338300,
+        "event_ticker": "SYNTH-EVENT-023-TRADE",
+        "market_ticker": "SYNTH-EVENT-023-TRADE-BAND-A",
+        "minute": 45,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s23/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 45,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s23",
+    "trades": [
+      {
+        "end_ts": 4087338300,
+        "event_ticker": "SYNTH-EVENT-023-TRADE",
+        "market_ticker": "SYNTH-EVENT-023-TRADE-BAND-A",
+        "minute": 45,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s3/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s3",
+    "trades": [
+      {
+        "end_ts": 4086622500,
+        "event_ticker": "SYNTH-EVENT-003-LOSS",
+        "market_ticker": "SYNTH-EVENT-003-LOSS-BAND-C",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s3/multi_event": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 2,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 2
+      }
+    ],
+    "side": "yes",
+    "strategy": "s3",
+    "trades": [
+      {
+        "end_ts": 4086626100,
+        "event_ticker": "SYNTH-EVENT-003-MULTI-0",
+        "market_ticker": "SYNTH-EVENT-003-MULTI-0-BAND-C",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      },
+      {
+        "end_ts": 4086629700,
+        "event_ticker": "SYNTH-EVENT-003-MULTI-1",
+        "market_ticker": "SYNTH-EVENT-003-MULTI-1-BAND-C",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s3/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s3",
+    "trades": [
+      {
+        "end_ts": 4086618900,
+        "event_ticker": "SYNTH-EVENT-003-TRADE",
+        "market_ticker": "SYNTH-EVENT-003-TRADE-BAND-C",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s3/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s3",
+    "trades": [
+      {
+        "end_ts": 4086618900,
+        "event_ticker": "SYNTH-EVENT-003-TRADE",
+        "market_ticker": "SYNTH-EVENT-003-TRADE-BAND-C",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s4/abstain_small_move": {
+    "minutes": [
+      {
+        "abstentions": {
+          "small_move": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s4",
+    "trades": []
+  },
+  "s4/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s4",
+    "trades": [
+      {
+        "end_ts": 4086662100,
+        "event_ticker": "SYNTH-EVENT-004-LOSS",
+        "market_ticker": "SYNTH-EVENT-004-LOSS-BAND-B",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s4/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s4",
+    "trades": [
+      {
+        "end_ts": 4086654900,
+        "event_ticker": "SYNTH-EVENT-004-TRADE",
+        "market_ticker": "SYNTH-EVENT-004-TRADE-BAND-B",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s4/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s4",
+    "trades": [
+      {
+        "end_ts": 4086654900,
+        "event_ticker": "SYNTH-EVENT-004-TRADE",
+        "market_ticker": "SYNTH-EVENT-004-TRADE-BAND-B",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s5/abstain_thin_buffer": {
+    "minutes": [
+      {
+        "abstentions": {
+          "thin_buffer": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s5",
+    "trades": []
+  },
+  "s5/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s5",
+    "trades": [
+      {
+        "end_ts": 4086698100,
+        "event_ticker": "SYNTH-EVENT-005-LOSS",
+        "market_ticker": "SYNTH-EVENT-005-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s5/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s5",
+    "trades": [
+      {
+        "end_ts": 4086690900,
+        "event_ticker": "SYNTH-EVENT-005-TRADE",
+        "market_ticker": "SYNTH-EVENT-005-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s5/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s5",
+    "trades": [
+      {
+        "end_ts": 4086690900,
+        "event_ticker": "SYNTH-EVENT-005-TRADE",
+        "market_ticker": "SYNTH-EVENT-005-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s6/abstain_no_direction": {
+    "minutes": [
+      {
+        "abstentions": {
+          "no_direction": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s6",
+    "trades": []
+  },
+  "s6/abstain_not_near_edge": {
+    "minutes": [
+      {
+        "abstentions": {
+          "not_near_edge": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s6",
+    "trades": []
+  },
+  "s6/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s6",
+    "trades": [
+      {
+        "end_ts": 4086737700,
+        "event_ticker": "SYNTH-EVENT-006-LOSS",
+        "market_ticker": "SYNTH-EVENT-006-LOSS-BAND-B",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s6/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s6",
+    "trades": [
+      {
+        "end_ts": 4086726900,
+        "event_ticker": "SYNTH-EVENT-006-TRADE",
+        "market_ticker": "SYNTH-EVENT-006-TRADE-BAND-B",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s6/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s6",
+    "trades": [
+      {
+        "end_ts": 4086726900,
+        "event_ticker": "SYNTH-EVENT-006-TRADE",
+        "market_ticker": "SYNTH-EVENT-006-TRADE-BAND-B",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s7/abstain_no_unique_mode": {
+    "minutes": [
+      {
+        "abstentions": {
+          "no_unique_mode": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s7",
+    "trades": []
+  },
+  "s7/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s7",
+    "trades": [
+      {
+        "end_ts": 4086770100,
+        "event_ticker": "SYNTH-EVENT-007-LOSS",
+        "market_ticker": "SYNTH-EVENT-007-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s7/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s7",
+    "trades": [
+      {
+        "end_ts": 4086762900,
+        "event_ticker": "SYNTH-EVENT-007-TRADE",
+        "market_ticker": "SYNTH-EVENT-007-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s7/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s7",
+    "trades": [
+      {
+        "end_ts": 4086762900,
+        "event_ticker": "SYNTH-EVENT-007-TRADE",
+        "market_ticker": "SYNTH-EVENT-007-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s8/abstain_unconfirmed": {
+    "minutes": [
+      {
+        "abstentions": {
+          "unconfirmed_bracket": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s8",
+    "trades": []
+  },
+  "s8/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s8",
+    "trades": [
+      {
+        "end_ts": 4086806100,
+        "event_ticker": "SYNTH-EVENT-008-LOSS",
+        "market_ticker": "SYNTH-EVENT-008-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s8/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s8",
+    "trades": [
+      {
+        "end_ts": 4086798900,
+        "event_ticker": "SYNTH-EVENT-008-TRADE",
+        "market_ticker": "SYNTH-EVENT-008-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s8/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s8",
+    "trades": [
+      {
+        "end_ts": 4086798900,
+        "event_ticker": "SYNTH-EVENT-008-TRADE",
+        "market_ticker": "SYNTH-EVENT-008-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  },
+  "s9/abstain_thin": {
+    "minutes": [
+      {
+        "abstentions": {
+          "thin_excursion_buffer": 1
+        },
+        "eligible": 0,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s9",
+    "trades": []
+  },
+  "s9/loss": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "yes",
+    "strategy": "s9",
+    "trades": [
+      {
+        "end_ts": 4086842100,
+        "event_ticker": "SYNTH-EVENT-009-LOSS",
+        "market_ticker": "SYNTH-EVENT-009-LOSS-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": false
+      }
+    ]
+  },
+  "s9/trade_no": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 1,
+        "minute": 55,
+        "wins": 0
+      }
+    ],
+    "side": "no",
+    "strategy": "s9",
+    "trades": [
+      {
+        "end_ts": 4086834900,
+        "event_ticker": "SYNTH-EVENT-009-TRADE",
+        "market_ticker": "SYNTH-EVENT-009-TRADE-BAND-A",
+        "minute": 55,
+        "side": "no",
+        "won": false
+      }
+    ]
+  },
+  "s9/trade_yes": {
+    "minutes": [
+      {
+        "abstentions": {},
+        "eligible": 1,
+        "exclusions": {},
+        "losses": 0,
+        "minute": 55,
+        "wins": 1
+      }
+    ],
+    "side": "yes",
+    "strategy": "s9",
+    "trades": [
+      {
+        "end_ts": 4086834900,
+        "event_ticker": "SYNTH-EVENT-009-TRADE",
+        "market_ticker": "SYNTH-EVENT-009-TRADE-BAND-A",
+        "minute": 55,
+        "side": "yes",
+        "won": true
+      }
+    ]
+  }
+}

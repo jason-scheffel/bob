@@ -21,6 +21,14 @@ def db():
     connection.close()
 
 
+@pytest.mark.parametrize(
+    ("checkpoint", "expected"),
+    [(55, 50), (50, 40), (45, 30), (40, 20)],
+)
+def test_confirmation_minute_matched_horizon(checkpoint: int, expected: int) -> None:
+    assert confirmation_minute(checkpoint) == expected
+
+
 def test_s8_horizon_confirmed_bracket_wins(db) -> None:
     store_settled_events(db, [research_settled(expiration="150", winner="a")])
     store_btc_candles(db, research_flat_bars(range(50, 56), "150"))
@@ -30,6 +38,7 @@ def test_s8_horizon_confirmed_bracket_wins(db) -> None:
     assert confirmation_minute(55) == 50
     assert report.minutes[0].eligible == 1
     assert report.minutes[0].wins == 1
+    assert report.trades[0].market_ticker.endswith("-A")
 
 
 def test_s8_unconfirmed_bracket_abstains(db) -> None:
@@ -42,3 +51,19 @@ def test_s8_unconfirmed_bracket_abstains(db) -> None:
 
     assert report.minutes[0].eligible == 0
     assert report.minutes[0].abstentions == {"unconfirmed_bracket": 1}
+
+
+def test_s8_loss_when_confirmed_bracket_loses(db) -> None:
+    store_settled_events(db, [research_settled(expiration="250", winner="b")])
+    store_btc_candles(db, research_flat_bars(range(50, 56), "150"))
+    report = evaluate(db, minutes=(55,), side="yes")
+    assert report.minutes[0].eligible == 1
+    assert report.minutes[0].losses == 1
+
+
+def test_s8_no_side_complements(db) -> None:
+    store_settled_events(db, [research_settled(expiration="150", winner="a")])
+    store_btc_candles(db, research_flat_bars(range(50, 56), "150"))
+    report = evaluate(db, minutes=(55,), side="no")
+    assert report.minutes[0].eligible == 1
+    assert report.minutes[0].losses == 1

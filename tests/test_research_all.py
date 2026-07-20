@@ -8,13 +8,16 @@ from pathlib import Path
 import pytest
 
 from bob.db import (
+    MarketQuoteBar,
     MinuteBar,
     connect,
     initialize_schema,
     store_btc_candles,
+    store_market_candles,
     store_settled_events,
 )
 from bob.kalshi import STATUS_COMPLETE, Bracket, Event, SettledEvent
+from bob.research.common import checkpoint_end_ts
 from bob.research.runner import (
     STRATEGY_NAMES,
     run_all_strategies,
@@ -133,3 +136,141 @@ def test_run_all_rejects_memory_db() -> None:
         run_all_strategies(":memory:", minutes=(50,), side="yes")
     with pytest.raises(ValueError, match="on-disk"):
         run_all_strategy_pnl(":memory:", minutes=(50,), side="yes")
+
+
+def _seed_s1_with_exit_quotes(db_path: Path) -> None:
+    """Synthetic-looking path: flat mid band + entry/exit quotes for overlays."""
+    connection = connect(db_path)
+    initialize_schema(connection)
+    event_ticker = "SYNTH-EVENT-ALL-001"
+    store_settled_events(
+        connection,
+        [
+            SettledEvent(
+                event=Event(
+                    event_ticker=event_ticker,
+                    close_ts=CLOSE,
+                    status=STATUS_COMPLETE,
+                    expiration_value=Decimal("150"),
+                ),
+                brackets=(
+                    Bracket(
+                        ticker=f"{event_ticker}-BAND-A",
+                        event_ticker=event_ticker,
+                        floor_strike=Decimal("100"),
+                        cap_strike=Decimal("199.99"),
+                        won=True,
+                    ),
+                    Bracket(
+                        ticker=f"{event_ticker}-BAND-B",
+                        event_ticker=event_ticker,
+                        floor_strike=Decimal("200"),
+                        cap_strike=Decimal("299.99"),
+                        won=False,
+                    ),
+                    Bracket(
+                        ticker=f"{event_ticker}-BAND-C",
+                        event_ticker=event_ticker,
+                        floor_strike=Decimal("300"),
+                        cap_strike=Decimal("399.99"),
+                        won=False,
+                    ),
+                ),
+            )
+        ],
+    )
+    store_btc_candles(
+        connection,
+        [
+            MinuteBar(
+                end_ts=checkpoint_end_ts(CLOSE, minute),
+                open="150",
+                high="150",
+                low="150",
+                close="150",
+            )
+            for minute in range(1, 56)
+        ],
+    )
+    ticker = f"{event_ticker}-BAND-A"
+    store_market_candles(
+        connection,
+        [
+            MarketQuoteBar(
+                ticker=ticker,
+                end_ts=checkpoint_end_ts(CLOSE, 55),
+                yes_bid_close="0.50",
+                yes_ask_close="0.55",
+            ),
+            MarketQuoteBar(
+                ticker=ticker,
+                end_ts=checkpoint_end_ts(CLOSE, 56),
+                yes_bid_close="0.20",
+                yes_ask_close="0.22",
+            ),
+            MarketQuoteBar(
+                ticker=ticker,
+                end_ts=checkpoint_end_ts(CLOSE, 57),
+                yes_bid_close="0.70",
+                yes_ask_close="0.75",
+            ),
+        ],
+    )
+    connection.close()
+
+
+@pytest.mark.parametrize(
+    ("stop_bid", "take_pct", "stop_from", "stopped", "taken"),
+    [
+        (None, None, 55, 0, 0),
+        (Decimal("0.30"), None, 55, 1, 0),
+        (None, Decimal("0.20"), 55, 0, 1),
+        (Decimal("0.30"), Decimal("0.20"), 55, 1, 0),  # stop before take
+    ],
+)
+def test_run_strategy_pnl_overlays_on_synth(
+    tmp_path: Path,
+    stop_bid: Decimal | None,
+    take_pct: Decimal | None,
+    stop_from: int,
+    stopped: int,
+    taken: int,
+) -> None:
+    db_path = tmp_path / "bob.sqlite"
+    _seed_s1_with_exit_quotes(db_path)
+    solo = run_strategy_pnl_on_db(
+        db_path,
+        "s1",
+        minutes=(55,),
+        side="yes",
+        stop_bid=stop_bid,
+        take_pct=take_pct,
+        stop_from=stop_from,
+        readonly=True,
+    )
+    assert solo.pnl.quote_eligible == 1
+    assert solo.pnl.stopped == stopped
+    assert solo.pnl.taken == taken
+    if stopped:
+        trade = solo.pnl.trades[0]
+        assert trade.exit_minute == 56
+        assert trade.settlement == Decimal("0.20")
+    if taken and not stopped:
+        trade = solo.pnl.trades[0]
+        assert trade.exit_minute == 57
+        assert trade.settlement == Decimal("0.70")
+
+    combined = run_all_strategy_pnl(
+        db_path,
+        minutes=(55,),
+        side="yes",
+        workers=1,
+        names=("s1",),
+        stop_bid=stop_bid,
+        take_pct=take_pct,
+        stop_from=stop_from,
+    )
+    assert len(combined) == 1
+    assert combined[0].pnl.stopped == solo.pnl.stopped
+    assert combined[0].pnl.taken == solo.pnl.taken
+    assert combined[0].pnl.gross == solo.pnl.gross
